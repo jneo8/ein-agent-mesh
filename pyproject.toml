@@ -1,0 +1,19 @@
+[project]
+name = "ein-mesh"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.10",
+    "aiokafka>=0.12",
+    "litellm>=1.84",
+    "pydantic>=2.10",
+]
+
+[project.scripts]
+ein-mesh = "ein_mesh:main"
+
+[build-system]
+requires = ["uv_build>=0.10.9,<0.11.0"]
+build-backend = "uv_build"
