@@ -14,7 +14,6 @@ import asyncio
 import json
 import logging
 import time
-import uuid
 from typing import ClassVar
 
 import litellm
@@ -32,6 +31,7 @@ from ein_mesh.schemas import (
     TriageOutput,
     TriageState,
     Alert,
+    new_root_id,
 )
 
 log = logging.getLogger(__name__)
@@ -230,7 +230,7 @@ class Triage(Role):
         open_ = self.open.setdefault(cluster, {})
         for d in out.decisions:
             if isinstance(d, Open):
-                root_id = f"inc-{uuid.uuid4().hex[:10]}"
+                root_id = new_root_id()
                 picked = [by_id[i] for i in d.alerts]
                 ns = picked[0].namespace if picked else ""
                 inc = Incident(id=root_id, cluster=cluster, namespace=ns, title=d.title,

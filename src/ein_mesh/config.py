@@ -35,6 +35,13 @@ class Topics:
 
     The Terraform data-integrator grants PREFIXED ACLs on ``TOPIC_PREFIX``, so an override that
     leaves the prefix needs its own ACL.
+
+    ``TOPIC_PARTITIONS`` (default 12) is the partition count of every mesh topic. One number for all
+    of them because the topics keyed by ``root_id`` must be co-partitioned: a record's partition is
+    ``hash(key) % partitions``, so the instance holding an investigation's state only receives its
+    later records when every topic has the same count. The number is fixed once topics exist; changing
+    it moves live keys to other partitions. ``TOPIC_REPLICATION`` (default 1) must not exceed the
+    broker count.
     """
 
     prefix: str = field(default_factory=lambda: _env("TOPIC_PREFIX", "ein."))
@@ -44,8 +51,12 @@ class Topics:
     incidents_normal: str = field(default_factory=lambda: _env("TOPIC_INCIDENTS_NORMAL"))
     events: str = field(default_factory=lambda: _env("TOPIC_EVENTS"))
     investigation_state: str = field(default_factory=lambda: _env("TOPIC_INVESTIGATION_STATE"))
+    partitions: int = field(default_factory=lambda: int(_env("TOPIC_PARTITIONS", "12")))
+    replication: int = field(default_factory=lambda: int(_env("TOPIC_REPLICATION", "1")))
 
     def __post_init__(self) -> None:
+        if self.partitions < 1:
+            raise ValueError(f"TOPIC_PARTITIONS must be >= 1, got {self.partitions}")
         defaults = {
             "alerts": "alerts",
             "triage_state": "triage.state",
@@ -86,6 +97,20 @@ class Topics:
             self.events: {"retention.ms": str(30 * 24 * 3600 * 1000)},
             self.investigation_state: {"cleanup.policy": "compact"},
         }
+
+    def layout_errors(self, counts: dict[str, int | None]) -> list[str]:
+        """Why the broker's topics do not match this layout. ``counts`` maps each mesh topic to its
+        partition count on the broker, ``None`` when it does not exist. Empty means everything is
+        co-partitioned as configured; a non-empty result is a reason to refuse to start."""
+        errors = []
+        for name in self.all():
+            n = counts.get(name)
+            if n is None:
+                errors.append(f"{name}: missing, run `ein-mesh init`")
+            elif n != self.partitions:
+                errors.append(f"{name}: {n} partitions, TOPIC_PARTITIONS is {self.partitions}; "
+                              "topics must be co-partitioned, recreate the mesh topics or fix the setting")
+        return errors
 
 
 @dataclass(frozen=True)

@@ -168,9 +168,11 @@ All producers run with `enable_idempotence=True` and gzip compression.
 
 ## `ein-mesh init`
 
-Creates every topic in the [topics reference](topics.md) with 1 partition and replication factor 1,
-applying each topic's cleanup and retention config. Existing topics are left unchanged. Safe to
-re-run. Needs no running role; it is the only deploy prerequisite.
+Creates every topic in the [topics reference](topics.md) with `TOPIC_PARTITIONS` partitions
+(default 12) and `TOPIC_REPLICATION` replicas (default 1), applying each topic's cleanup and
+retention config. Existing topics are left unchanged, then every mesh topic's partition count is
+compared with the setting; a mismatch exits non-zero and names the topic. Safe to re-run. Needs no
+running role; it is the only deploy prerequisite. See [partitions](topics.md#partitions).
 
 ## `ein-mesh gateway`
 
@@ -244,7 +246,7 @@ Role. Batches alerts per cluster, classifies each batch with one LLM call, opens
 
 | `action` | Fields | Effect |
 | --- | --- | --- |
-| `open` | `alerts`, `priority`, `title`, `reason` | New `Incident` with id `inc-<10 hex>`; `IncidentMessage` on `incidents.<priority>`; event `incident.opened`. |
+| `open` | `alerts`, `priority`, `title`, `reason` | New `Incident` with id `inc-<UTC time>-<10 hex>`, e.g. `inc-20261010T074252Z-3f9a1c2b7d`; `IncidentMessage` on `incidents.<priority>`; event `incident.opened`. |
 | `attach` | `alerts`, `incident`, `reason` | Only toward a candidate (an open incident sharing a group with an alert in the batch). Alert ids and names appended; event `alerts.attached`. Idempotent on alert id. |
 | `ignore` | `alerts`, `reason` | Event `alerts.ignored` keyed `triage-<cluster>`; fingerprints added to the cluster's ignored set. |
 
@@ -267,7 +269,7 @@ no questions, no closing, no LLM yet.
 | Source | `src/ein_mesh/roles/orchestrator.py` |
 | Reads | `incidents.critical`, `incidents.normal`, consumer group `${KAFKA_GROUP_PREFIX}orchestrator`; `investigation.state` at startup without a group |
 | Writes | `investigation.state` (key = `root_id`), `investigation.events` (key = `root_id`, `role=orchestrator`) |
-| State | In-memory `root_id -> InvestigationState`. Restored from `investigation.state` at startup, rewritten on every transition. |
+| State | In-memory `root_id -> InvestigationState`, including the bounded `context` summary. Restored from `investigation.state` at startup, rewritten on every transition; events are not replayed. |
 | LLM | None in this slice. |
 
 **Loop**
@@ -279,9 +281,11 @@ no questions, no closing, no LLM yet.
 4. Commit offsets.
 
 **Co-partitioning.** `incidents.*`, `investigation.events` and `investigation.state` are all keyed
-by `root_id` and created with the same partition count, so one instance holds the state for every
-record it receives. Running more than one instance additionally needs the range assignor and
-state load/unload on rebalance, neither of which this slice implements.
+by `root_id` and created with the same partition count (`TOPIC_PARTITIONS`), so one instance holds
+the state for every record it receives. `Role.run` verifies the layout through `MessageBus.verify`
+before restoring state and refuses to start on a mismatch. Running more than one instance
+additionally needs the range assignor and state load/unload on rebalance, neither of which this
+slice implements.
 
 ## `ein-mesh tail [TOPIC]...`
 

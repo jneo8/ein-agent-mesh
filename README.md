@@ -90,6 +90,7 @@ from the environment; the `justfile` wraps each one and loads `.env` first:
 | `KAFKA_GROUP_PREFIX` | `ein-`, must match the data-integrator's `consumer-group-prefix` |
 | `TOPIC_PREFIX` | `ein.`, prepended to every default topic name; must match Terraform's `topic_prefix` so the PREFIXED ACL covers them |
 | `TOPIC_ALERTS`, `TOPIC_TRIAGE_STATE`, `TOPIC_INCIDENTS_CRITICAL`, `TOPIC_INCIDENTS_NORMAL`, `TOPIC_EVENTS`, `TOPIC_INVESTIGATION_STATE` | optional, rename one topic outright (ignores the prefix); a name outside the prefix needs its own ACL |
+| `TOPIC_PARTITIONS`, `TOPIC_REPLICATION` | `12` and `1`; one partition count for every topic keeps the `root_id`-keyed topics co-partitioned, fixed once created; replication must not exceed the broker count |
 | `GROUP_BY` | `cluster,namespace`, labels the gateway joins into each alert's group key when the webhook has no `groupKey`; triage attaches by rule inside a group |
 | `GEMINI_API_KEY`, `EIN_AGENT_MODEL` | LLM for triage; live in the repo's `.env` (git-ignored, `chmod 600`) |
 

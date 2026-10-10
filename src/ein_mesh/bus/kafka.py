@@ -71,20 +71,39 @@ async def read_to_end(settings: KafkaSettings, topic: str) -> list:
     return out
 
 
-async def create_topics(settings: KafkaSettings, topics: Topics, partitions: int = 1) -> list[str]:
-    """The v1 init step: make every mesh topic exist. Safe to re-run."""
+async def partition_counts(admin: AIOKafkaAdminClient, names: list[str]) -> dict[str, int | None]:
+    """Partition count of each named topic on the broker, ``None`` for a topic that does not exist."""
+    described = await admin.describe_topics(names)
+    found = {t["topic"]: len(t["partitions"]) for t in described if t.get("error_code", 0) == 0 and t["partitions"]}
+    return {name: found.get(name) for name in names}
+
+
+async def verify_layout(admin: AIOKafkaAdminClient, topics: Topics) -> None:
+    """Raise ``RuntimeError`` unless every mesh topic exists with ``topics.partitions`` partitions."""
+    errors = topics.layout_errors(await partition_counts(admin, list(topics.all())))
+    if errors:
+        raise RuntimeError("topic layout mismatch:\n  " + "\n  ".join(errors))
+
+
+async def create_topics(settings: KafkaSettings, topics: Topics) -> list[str]:
+    """The v1 init step: make every mesh topic exist with ``topics.partitions`` partitions and
+    ``topics.replication`` replicas, then check the layout. Safe to re-run: existing topics are left
+    alone, but one with a different partition count makes init fail, because co-partitioning cannot
+    be repaired in place."""
     admin = AIOKafkaAdminClient(**settings.client_kwargs())
     await admin.start()
     created: list[str] = []
     try:
         for name, cfg in topics.all().items():
             try:
-                await admin.create_topics(
-                    [NewTopic(name, num_partitions=partitions, replication_factor=1, topic_configs=cfg)]
-                )
+                await admin.create_topics([
+                    NewTopic(name, num_partitions=topics.partitions, replication_factor=topics.replication,
+                             topic_configs=cfg)
+                ])
                 created.append(name)
             except TopicAlreadyExistsError:
                 log.info("topic %s already exists", name)
+        await verify_layout(admin, topics)
     finally:
         await admin.close()
     return created
@@ -126,3 +145,11 @@ class KafkaBus(MessageBus):
     async def commit(self) -> None:
         assert self._consumer is not None
         await self._consumer.commit()
+
+    async def verify(self, topics: Topics) -> None:
+        admin = AIOKafkaAdminClient(**self.settings.client_kwargs())
+        await admin.start()
+        try:
+            await verify_layout(admin, topics)
+        finally:
+            await admin.close()

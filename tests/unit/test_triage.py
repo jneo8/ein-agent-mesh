@@ -1,5 +1,7 @@
 """Triage through the InMemoryBus: no Kafka, no LLM (classify is replaced per test)."""
 
+import re
+
 import pytest
 
 from ein_mesh.config import TriageSettings
@@ -29,6 +31,7 @@ async def test_fallback_opens_one_incident_per_namespace(bus, topics):
     incidents = bus.values(topics.incidents("critical"))
     assert len(incidents) == 2
     assert sorted(i["cluster"] + "/" + i["alerts"][0]["namespace"] for i in incidents) == ["dev/ceph", "dev/temporal"]
+    assert all(re.fullmatch(r"inc-\d{8}T\d{6}Z-[0-9a-f]{10}", i["root_id"]) for i in incidents)
     kinds = [e["kind"] for e in bus.values(topics.events)]
     assert kinds == ["incident.opened", "incident.opened"]
     assert all(e["body"]["how"] == "fallback" for e in bus.values(topics.events))

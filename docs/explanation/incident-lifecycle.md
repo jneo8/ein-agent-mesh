@@ -78,6 +78,26 @@
 - Allowed replies are listed by the question. The frontend does not interpret free text like
   "ok" or "fine for now".
 
+## What the orchestrator remembers
+
+- Everything about one investigation hangs off its `root_id`: the incident, the state snapshot,
+  every event, every question and answer, and the frontend thread. Finding "the earlier
+  conversation" is a key lookup, never a search.
+- `investigation.state` carries a `context` field next to `status`: the checkpoint of what the
+  orchestrator needs to resume. Confirmed facts, the current hypothesis and plan, the conclusions of
+  questions already answered. The pending question is already in the state.
+- `context` is a summary, not a transcript. It is capped at 16 KB; a larger value is rejected by the
+  schema and the orchestrator must compress (merge old facts, drop refuted hypotheses) before it
+  can write state.
+- The raw history stays on `investigation.events`. Kafka cannot fetch a key's records without
+  scanning the partition, so a restart reads `investigation.state` to the end and has every
+  investigation's status and context back at once. Replaying events is a fallback, not the path.
+- Why a bounded summary and not a separate topic: the state record stays a small message, the
+  compacted topic stays at roughly active investigations times 16 KB, and there is no second topic
+  to fall out of sync. Design note: "調查的記憶：context 欄位".
+- Memory across investigations ("like that Ceph case last month") is not this field. It is the
+  Outline integration in the design note, out of scope for v1.
+
 ## What a closed incident leaves behind
 
 - Its `root_id` on `investigation.state` with `status=closed`.

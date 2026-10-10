@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+CONTEXT_MAX_BYTES = 16 * 1024
+"""Upper bound on ``InvestigationState.context`` in UTF-8 bytes. The field is a checkpoint of what
+the orchestrator needs to resume, not a transcript; the raw history stays on investigation.events."""
+
+
+def new_root_id(prefix: str = "inc") -> str:
+    """Identity of one investigation, e.g. ``inc-20261010T074252Z-3f9a1c2b7d``. The UTC timestamp
+    makes ids sort and read by time; the random tail keeps two incidents opened in the same second
+    distinct. Every lifecycle topic uses it as the Kafka key."""
+    return f"{prefix}-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:10]}"
 
 
 class Alert(BaseModel):
@@ -102,6 +114,20 @@ class InvestigationState(BaseModel):
     status: Literal["investigating", "waiting", "closed"]
     opened_at: str
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    context: str = Field(
+        default="",
+        description="Bounded summary the orchestrator rewrites every turn so a restart resumes without "
+        "replaying events: confirmed facts, current hypothesis and plan, conclusions of past "
+        "questions. Never the transcript.",
+    )
+
+    @field_validator("context")
+    @classmethod
+    def context_within_limit(cls, v: str) -> str:
+        size = len(v.encode("utf-8"))
+        if size > CONTEXT_MAX_BYTES:
+            raise ValueError(f"context is {size} bytes, limit is {CONTEXT_MAX_BYTES}; summarise before writing state")
+        return v
 
 
 class Event(BaseModel):

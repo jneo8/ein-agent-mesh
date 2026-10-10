@@ -10,6 +10,8 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from ein_mesh.config import Topics
+
 
 @dataclass(frozen=True)
 class Record:
@@ -44,6 +46,11 @@ class MessageBus(ABC):
 
     @abstractmethod
     async def commit(self) -> None: ...
+
+    async def verify(self, topics: Topics) -> None:
+        """Refuse to run against a broker whose topics are not laid out as configured (missing, or
+        not all with ``topics.partitions`` partitions). Raises ``RuntimeError`` listing the problems.
+        Default: nothing to verify; the Kafka bus overrides it."""
 
     async def produce(self, topic: str, key: str | None, value) -> None:
         """``value`` is a pydantic model or a JSON-able dict; it reaches the transport as a dict."""

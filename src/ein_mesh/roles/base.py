@@ -59,6 +59,7 @@ class Role(ABC):
         self.bus.subscribe(self.name, *self.inputs, **self.consumer_options())
         await self.bus.start()
         try:
+            await self.bus.verify(self.topics)
             await self.restore()
             log.info("%s consuming %s", self.name, self.inputs)
             while True:

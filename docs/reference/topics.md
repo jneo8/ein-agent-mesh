@@ -17,12 +17,35 @@ Topic names are resolved by `Topics` in `src/ein_mesh/config.py` from the enviro
 | `TOPIC_INCIDENTS_NORMAL` | `${TOPIC_PREFIX}incidents.normal` | Full name of the normal incidents topic. Ignores the prefix. |
 | `TOPIC_EVENTS` | `${TOPIC_PREFIX}investigation.events` | Full name of the events topic. Ignores the prefix. |
 | `TOPIC_INVESTIGATION_STATE` | `${TOPIC_PREFIX}investigation.state` | Full name of the investigation state topic. Ignores the prefix. |
+| `TOPIC_PARTITIONS` | `12` | Partition count of every mesh topic. One number for all so the `root_id`-keyed topics are co-partitioned. Fixed once topics exist. |
+| `TOPIC_REPLICATION` | `1` | Replication factor at creation. Must not exceed the broker count (Terraform `kafka_units`). |
 
 A name that does not start with `TOPIC_PREFIX` is outside the data-integrator's ACL and needs its
 own grant.
 
-`ein-mesh init` creates all six topics with 1 partition and replication factor 1, and is safe to
-re-run. Consumer groups are `${KAFKA_GROUP_PREFIX}<name>`, default prefix `ein-`.
+`ein-mesh init` creates all six topics with `TOPIC_PARTITIONS` partitions and `TOPIC_REPLICATION`
+replicas, then checks that every mesh topic has exactly that partition count; it fails on a
+mismatch instead of altering a topic. Every role runs the same check at startup and refuses to
+start on a mismatch. Consumer groups are `${KAFKA_GROUP_PREFIX}<name>`, default prefix `ein-`.
+
+## Partitions
+
+- Every mesh topic has the same partition count, default 12.
+- Why the same: a record lands on `hash(key) % partitions`. `incidents.*`, `investigation.events`
+  and `investigation.state` are keyed by `root_id`, so with equal counts one investigation's records
+  all land on the same partition number, and the orchestrator instance that owns that partition
+  across the topics holds the state for every record it receives. `alerts` and `triage.state` are
+  the same pair keyed by `cluster`. Kafka Streams enforces this for joins; the mesh enforces it in
+  `init` and at role startup.
+- Why 12: divisible by 1, 2, 3, 4, 6 and 12, so the range assignor gives every instance the same
+  share for any likely process count; far more processes than the mesh will run, since parallelism
+  inside a process is per `root_id`; and the cost of empty partitions is negligible at this volume.
+- Why fixed: adding partitions changes the hash mapping, so an in-flight `root_id` would start
+  landing on a partition whose owner has no state for it. Change the number only with no open
+  investigations, by recreating the topics.
+- Capacity: with classic consumer groups, instances beyond the partition count sit idle. Share
+  groups (Kafka 4.x) lift that limit but drop key affinity, so they are for the future per-role work
+  topics, not for the lifecycle topics.
 
 ## Topics
 
@@ -81,7 +104,7 @@ variable overrides it.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `id` | `str` | `inc-<10 hex>`; also the `root_id` on incidents and events. |
+| `id` | `str` | `inc-<UTC time>-<10 hex>`, e.g. `inc-20261010T074252Z-3f9a1c2b7d`; also the `root_id` on incidents and events. |
 | `cluster` | `str` | Cluster. |
 | `namespace` | `str` | Namespace of the first alert that opened it, or `""`. |
 | `title` | `str` | Title chosen by triage. |
@@ -105,7 +128,7 @@ variable overrides it.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `root_id` | `str` | Incident id, `inc-<10 hex>`. |
+| `root_id` | `str` | Incident id, `inc-<UTC time>-<10 hex>`, e.g. `inc-20261010T074252Z-3f9a1c2b7d`. |
 | `cluster` | `str` | Cluster. |
 | `priority` | `"critical" \| "normal"` | Same as the topic suffix. |
 | `title` | `str` | Title chosen by triage. |
@@ -164,13 +187,14 @@ The design reserves further kinds for later roles, including `report` for sub-ag
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `root_id` | `str` | Incident id, `inc-<10 hex>`. |
+| `root_id` | `str` | Incident id, `inc-<UTC time>-<10 hex>`, e.g. `inc-20261010T074252Z-3f9a1c2b7d`. |
 | `cluster` | `str` | Cluster. |
 | `priority` | `"critical" \| "normal"` | From the incident. |
 | `title` | `str` | From the incident. |
 | `status` | `"investigating" \| "waiting" \| "closed"` | Current lifecycle state. The PoC only writes `investigating`. |
 | `opened_at` | `str` | `IncidentMessage.opened_at`. |
 | `updated_at` | `str` | ISO 8601 UTC timestamp of this record. |
+| `context` | `str` | Bounded summary the orchestrator rewrites every turn: confirmed facts, current hypothesis and plan, conclusions of past questions. At most 16 KB UTF-8 (`CONTEXT_MAX_BYTES`); a larger value fails validation and is not written. Never the transcript, which stays on `investigation.events`. The PoC writes `""`. |
 
 ## Terraform
 

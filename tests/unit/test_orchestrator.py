@@ -1,7 +1,7 @@
 import pytest
 
 from ein_mesh.roles import Orchestrator
-from ein_mesh.schemas import IncidentMessage
+from ein_mesh.schemas import CONTEXT_MAX_BYTES, IncidentMessage, InvestigationState
 
 from .conftest import make_alert
 
@@ -41,3 +41,13 @@ async def test_restore_then_skip(bus, topics):
     assert o.state["inc-abc"].status == "investigating"
     await o.on_incident(incident())
     assert len(bus.values(topics.events)) == 1
+
+
+async def test_context_is_bounded():
+    base = dict(root_id="inc-x", cluster="dev", priority="critical", title="t", status="investigating", opened_at="0")
+    ok = InvestigationState(**base, context="a" * CONTEXT_MAX_BYTES)
+    assert len(ok.context) == CONTEXT_MAX_BYTES
+    with pytest.raises(ValueError, match="summarise"):
+        InvestigationState(**base, context="a" * (CONTEXT_MAX_BYTES + 1))
+    with pytest.raises(ValueError):  # the limit is in bytes, not characters
+        InvestigationState(**base, context="\u6e2c" * (CONTEXT_MAX_BYTES // 3 + 1))

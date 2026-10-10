@@ -7,7 +7,7 @@ import logging
 
 import click
 
-from ein_mesh.bus import KafkaBus
+from ein_mesh.bus import KafkaBus, create_topics
 from ein_mesh.config import KafkaSettings, Topics, TriageSettings
 
 
@@ -24,12 +24,15 @@ def _env() -> tuple[KafkaBus, Topics]:
 
 @cli.command()
 def init() -> None:
-    """Create every mesh topic. The only deploy prerequisite; safe to re-run."""
-    from ein_mesh.bus.kafka import create_topics
-
+    """Create every mesh topic with TOPIC_PARTITIONS partitions. The only deploy prerequisite; safe
+    to re-run. Fails when an existing topic has a different partition count."""
     ks, topics = KafkaSettings(), Topics()
-    created = asyncio.run(create_topics(ks, topics))
-    click.echo(f"created {created or 'nothing new'}; all topics: {list(topics.all())}")
+    try:
+        created = asyncio.run(create_topics(ks, topics))
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"created {created or 'nothing new'} ({topics.partitions} partitions, replication "
+               f"{topics.replication}); all topics: {list(topics.all())}")
 
 
 @cli.command()
