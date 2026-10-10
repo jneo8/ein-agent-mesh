@@ -1,0 +1,30 @@
+{
+  "description": "Two OSDs on ceph-2 go down; PG degradation follows. In the temporal namespace a PVC fills up and two pods crash-loop. node-exporter scrape failures are unrelated. Watchdog and the HPA notice are noise. The temporal symptoms are in fact caused by the Ceph failure, but nothing in the alert labels says so: triage must NOT merge them. Linking them is the orchestrator's job once an investigator has evidence.",
+  "incidents": [
+    {
+      "priority": "critical",
+      "alerts": [
+        {"alertname": "CephOSDDown", "osd": "osd.3"},
+        {"alertname": "CephOSDDown", "osd": "osd.7"},
+        {"alertname": "CephPGDegraded"},
+        {"alertname": "CephClusterWarningState"}
+      ]
+    },
+    {
+      "priority": "critical",
+      "alerts": [
+        {"alertname": "KubePersistentVolumeFillingUp"},
+        {"alertname": "KubePodCrashLooping", "pod": "temporal-k8s-0"},
+        {"alertname": "KubePodCrashLooping", "pod": "postgresql-k8s-0"}
+      ]
+    },
+    {
+      "priority": "normal",
+      "alerts": [{"alertname": "TargetDown"}]
+    }
+  ],
+  "ignored": [
+    {"alertname": "Watchdog"},
+    {"alertname": "KubeHpaMaxedOut"}
+  ]
+}

@@ -1,0 +1,160 @@
+"""Triage through the InMemoryBus: no Kafka, no LLM (classify is replaced per test)."""
+
+import pytest
+
+from ein_mesh.config import TriageSettings
+from ein_mesh.schemas import Attach, Ignore, Open, TriageOutput
+from ein_mesh.roles import Triage
+
+from .conftest import make_alert
+
+pytestmark = pytest.mark.asyncio
+
+
+def make(bus, topics, **ts):
+    return Triage(bus, topics, TriageSettings(model="fake", batch_size=ts.pop("batch_size", 3), batch_seconds=30, **ts))
+
+
+async def test_fallback_opens_one_incident_per_namespace(bus, topics):
+    t = make(bus, topics)
+
+    async def boom(cluster, alerts):
+        raise TimeoutError("llm down")
+
+    t.classify = boom
+    for a in (make_alert("a1"), make_alert("a2", ns="temporal", name="KubePodCrashLooping"), make_alert("a3", ns="ceph")):
+        await bus.produce(topics.alerts, "dev", a)
+    await t.run_until_idle()
+
+    incidents = bus.values(topics.incidents("critical"))
+    assert len(incidents) == 2
+    assert sorted(i["cluster"] + "/" + i["alerts"][0]["namespace"] for i in incidents) == ["dev/ceph", "dev/temporal"]
+    kinds = [e["kind"] for e in bus.values(topics.events)]
+    assert kinds == ["incident.opened", "incident.opened"]
+    assert all(e["body"]["how"] == "fallback" for e in bus.values(topics.events))
+    state = bus.values(topics.triage_state)[-1]
+    assert state["cluster"] == "dev" and len(state["incidents"]) == 2
+
+
+async def test_llm_decisions_are_applied_and_recorded(bus, topics):
+    t = make(bus, topics)
+
+    async def classify(cluster, alerts):
+        ids = [a.id for a in alerts]
+        return TriageOutput(decisions=[
+            Open(action="open", alerts=ids[:2], priority="normal", title="ceph degraded", reason="same osd"),
+            Ignore(action="ignore", alerts=ids[2:], reason="watchdog"),
+        ])
+
+    t.classify = classify
+    for a in (make_alert("a1"), make_alert("a2"), make_alert("w", ns="cos", name="Watchdog", severity="none")):
+        await bus.produce(topics.alerts, "dev", a)
+    await t.run_until_idle()
+
+    assert [i["title"] for i in bus.values(topics.incidents("normal"))] == ["ceph degraded"]
+    assert [e["kind"] for e in bus.values(topics.events)] == ["incident.opened", "alerts.ignored"]
+    assert bus.values(topics.events)[1]["root_id"] == "triage-dev"
+
+
+async def test_invalid_llm_output_falls_back(bus, topics):
+    t = make(bus, topics)
+
+    async def classify(cluster, alerts):  # references an incident that does not exist
+        return TriageOutput(decisions=[Attach(action="attach", alerts=[a.id for a in alerts], incident="inc-nope", reason="x")])
+
+    t.classify = classify
+    for a in (make_alert("a1"), make_alert("a2"), make_alert("a3")):
+        await bus.produce(topics.alerts, "dev", a)
+    await t.run_until_idle()
+    assert bus.values(topics.events)[0]["body"]["how"] == "fallback"
+
+
+async def test_time_based_flush_and_resolved_skipped(bus, topics):
+    t = make(bus, topics, batch_size=50)
+    seen = []
+
+    async def classify(cluster, alerts):
+        seen.append([a.id for a in alerts])
+        return TriageOutput(decisions=[Open(action="open", alerts=[a.id for a in alerts], priority="normal", title="x", reason="r")])
+
+    t.classify = classify
+    await bus.produce(topics.alerts, "dev", make_alert("a1"))
+    await bus.produce(topics.alerts, "dev", make_alert("r1", status="resolved"))
+    await t.run_until_idle()  # empty polls advance the fake clock past batch_seconds
+    assert seen == [["a1:t0"]]
+
+
+async def test_same_group_attaches_by_rule_without_the_model(bus, topics):
+    """Second poll: an alert whose group already has one open incident never reaches classify."""
+    t = make(bus, topics)
+    calls = []
+
+    async def classify(cluster, alerts):
+        calls.append([a.id for a in alerts])
+        return TriageOutput(decisions=[Open(action="open", alerts=[a.id for a in alerts], priority="critical", title="ceph", reason="r")])
+
+    t.classify = classify
+    for a in (make_alert("a1"), make_alert("a2"), make_alert("a3")):
+        await bus.produce(topics.alerts, "dev", a)
+    await t.run_until_idle()
+    root = bus.values(topics.incidents("critical"))[0]["root_id"]
+
+    await bus.produce(topics.alerts, "dev", make_alert("a4"))              # same group: dev/ceph
+    await bus.produce(topics.alerts, "dev", make_alert("b1", ns="temporal", name="KubePodCrashLooping"))
+    await bus.produce(topics.alerts, "dev", make_alert("b2", ns="temporal", name="KubePodCrashLooping"))
+    await bus.produce(topics.alerts, "dev", make_alert("b3", ns="temporal", name="KubePodCrashLooping"))
+    await t.run_until_idle()
+
+    assert calls == [["a1:t0", "a2:t0", "a3:t0"], ["b1:t0", "b2:t0", "b3:t0"]], "a4 was attached by rule, only the new group was classified"
+    attached = [e for e in bus.values(topics.events) if e["kind"] == "alerts.attached"]
+    assert attached == [{**attached[0], "root_id": root}] and attached[0]["body"] == {
+        "how": "rule", "alerts": ["a4:t0"], "reason": "same group as the open incident"}
+    state = bus.values(topics.triage_state)[-1]["incidents"]
+    assert sorted(i["group_key"] for i in state) == ["cluster=dev|namespace=ceph", "cluster=dev|namespace=temporal"]
+
+
+async def test_model_may_attach_only_among_candidates(bus, topics):
+    """Two open incidents in one group: new same-group alerts go to the model with exactly those two as
+    candidates; attaching to anything else is rejected and falls back."""
+    t = make(bus, topics, batch_size=2)
+    prompts = []
+
+    async def classify(cluster, alerts):
+        prompts.append(sorted(t.candidate_incidents(cluster, alerts)))
+        ids = [a.id for a in alerts]
+        if len(ids) == 2 and ids[0].startswith("n1:"):  # first batch: split one group into two incidents
+            return TriageOutput(decisions=[Open(action="open", alerts=[ids[0]], priority="critical", title="node-7", reason="r"),
+                                           Open(action="open", alerts=[ids[1]], priority="normal", title="node-3", reason="r")])
+        return TriageOutput(decisions=[Attach(action="attach", alerts=ids, incident="inc-not-a-candidate", reason="x")])
+
+    t.classify = classify
+    await bus.produce(topics.alerts, "dev", make_alert("n1", ns="kube-system", name="KubeNodeNotReady"))
+    await bus.produce(topics.alerts, "dev", make_alert("n2", ns="kube-system", name="NodeClockSkewDetected", severity="warning"))
+    await t.run_until_idle()
+    opened = sorted(i["root_id"] for i in bus.values(topics.incidents("critical")) + bus.values(topics.incidents("normal")))
+
+    await bus.produce(topics.alerts, "dev", make_alert("n3", ns="kube-system", name="KubeNodeUnreachable"))
+    await bus.produce(topics.alerts, "dev", make_alert("n4", ns="kube-system", name="KubeNodeUnreachable"))
+    await t.run_until_idle()
+
+    assert prompts[0] == [] and prompts[1] == opened, "ambiguous group: both incidents offered as candidates"
+    last = bus.values(topics.events)[-1]
+    assert last["kind"] == "alerts.attached" and last["body"]["how"] == "fallback"
+    assert last["root_id"] in opened
+
+
+async def test_restore_rebuilds_open_table(bus, topics):
+    t = make(bus, topics)
+
+    async def classify(cluster, alerts):
+        return TriageOutput(decisions=[Open(action="open", alerts=[a.id for a in alerts], priority="normal", title="first", reason="r")])
+
+    t.classify = classify
+    for a in (make_alert("a1"), make_alert("a2"), make_alert("a3")):
+        await bus.produce(topics.alerts, "dev", a)
+    await t.run_until_idle()
+    root = bus.values(topics.incidents("normal"))[0]["root_id"]
+
+    fresh = make(bus, topics)
+    await fresh.restore()
+    assert list(fresh.open["dev"]) == [root]

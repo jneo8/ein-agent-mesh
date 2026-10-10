@@ -1,0 +1,131 @@
+{
+  "receiver": "ein-mesh",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubePodCrashLooping",
+        "severity": "critical",
+        "namespace": "cos",
+        "cluster": "dev",
+        "pod": "loki-0",
+        "juju_application": "loki"
+      },
+      "annotations": {
+        "summary": "loki-0 restarting"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "8b235529559ad369"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubeContainerOOMKilled",
+        "severity": "warning",
+        "namespace": "cos",
+        "cluster": "dev",
+        "pod": "loki-0",
+        "container": "loki",
+        "juju_application": "loki"
+      },
+      "annotations": {
+        "summary": "container loki in loki-0 OOMKilled 4 times in 10m"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "93ed0cc23db8b46f"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "LokiRequestErrors",
+        "severity": "warning",
+        "namespace": "cos",
+        "cluster": "dev",
+        "juju_application": "loki",
+        "route": "loki_api_v1_push"
+      },
+      "annotations": {
+        "summary": "push error rate 23%"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "70b798d636848353"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubePersistentVolumeFillingUp",
+        "severity": "warning",
+        "namespace": "cos",
+        "cluster": "dev",
+        "persistentvolumeclaim": "database-prometheus-0",
+        "juju_application": "prometheus"
+      },
+      "annotations": {
+        "summary": "PVC database-prometheus-0 at 89%"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "58349622911429f1"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "PrometheusTSDBCompactionsFailing",
+        "severity": "warning",
+        "namespace": "cos",
+        "cluster": "dev",
+        "juju_application": "prometheus",
+        "pod": "prometheus-0"
+      },
+      "annotations": {
+        "summary": "3 compactions failed in 3h"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "d6d6733a4ef7c9d4"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubePodCrashLooping",
+        "severity": "warning",
+        "namespace": "cos",
+        "cluster": "dev",
+        "pod": "catalogue-0",
+        "juju_application": "catalogue"
+      },
+      "annotations": {
+        "summary": "catalogue-0 restarting"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "af00b5bac0cb1d99"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "Watchdog",
+        "severity": "none",
+        "namespace": "cos",
+        "cluster": "dev"
+      },
+      "annotations": {
+        "summary": "Always firing: alerting pipeline is working"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "cf9f8e8e201f337a"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "InfoInhibitor",
+        "severity": "none",
+        "namespace": "cos",
+        "cluster": "dev"
+      },
+      "annotations": {
+        "summary": "Inhibits info-level alerts while higher severity ones fire"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "78850e8361bc5fc5"
+    }
+  ]
+}

@@ -7,13 +7,24 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.10",
     "aiokafka>=0.12",
+    "click>=8.5.0",
     "litellm>=1.84",
     "pydantic>=2.10",
 ]
 
 [project.scripts]
-ein-mesh = "ein_mesh:main"
+ein-mesh = "ein_mesh.__main__:cli"
 
 [build-system]
 requires = ["uv_build>=0.10.9,<0.11.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+test = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests/unit", "tests/eval"]

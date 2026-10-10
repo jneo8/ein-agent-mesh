@@ -1,0 +1,87 @@
+{
+  "description": "The Ceph storm arrives over three batches five minutes apart, with Alertmanager re-sending osd.3 each time. Wave 1 opens the Ceph incident; wave 2 must ATTACH the new OSD, the health warning and the osd.3 repeat to it, and open a separate temporal incident; wave 3 must attach the second temporal pod and the PVC to the temporal incident and the osd.3 repeat to Ceph. Each wave is handled by a restarted triage that restores its open table from triage.state. Watchdog is noise every time.",
+  "incidents": [
+    {
+      "priority": "critical",
+      "alerts": [
+        {
+          "alertname": "CephOSDDown",
+          "osd": "osd.3",
+          "_wave": 1
+        },
+        {
+          "alertname": "CephPGDegraded"
+        },
+        {
+          "alertname": "CephOSDDown",
+          "osd": "osd.3",
+          "_wave": 2
+        },
+        {
+          "alertname": "CephOSDDown",
+          "osd": "osd.7"
+        },
+        {
+          "alertname": "CephClusterWarningState"
+        },
+        {
+          "alertname": "CephOSDDown",
+          "osd": "osd.3",
+          "_wave": 3
+        }
+      ]
+    },
+    {
+      "priority": "critical",
+      "alerts": [
+        {
+          "alertname": "KubePodCrashLooping",
+          "pod": "temporal-k8s-0"
+        },
+        {
+          "alertname": "KubePodCrashLooping",
+          "pod": "postgresql-k8s-0"
+        },
+        {
+          "alertname": "KubePersistentVolumeFillingUp"
+        }
+      ]
+    }
+  ],
+  "attached": [
+    {
+      "alertname": "CephOSDDown",
+      "osd": "osd.3",
+      "_wave": 2
+    },
+    {
+      "alertname": "CephOSDDown",
+      "osd": "osd.7"
+    },
+    {
+      "alertname": "CephClusterWarningState"
+    },
+    {
+      "alertname": "KubePodCrashLooping",
+      "pod": "postgresql-k8s-0"
+    },
+    {
+      "alertname": "KubePersistentVolumeFillingUp"
+    },
+    {
+      "alertname": "CephOSDDown",
+      "osd": "osd.3",
+      "_wave": 3
+    }
+  ],
+  "ignored": [
+    {
+      "alertname": "Watchdog",
+      "_wave": 1
+    },
+    {
+      "alertname": "Watchdog",
+      "_wave": 2
+    }
+  ]
+}

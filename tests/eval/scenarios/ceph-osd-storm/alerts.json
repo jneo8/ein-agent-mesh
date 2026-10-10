@@ -1,0 +1,156 @@
+{
+  "receiver": "ein-mesh",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "CephOSDDown",
+        "severity": "critical",
+        "namespace": "ceph",
+        "cluster": "dev",
+        "osd": "osd.3",
+        "host": "ceph-2"
+      },
+      "annotations": {
+        "summary": "OSD osd.3 on ceph-2 is down"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "99b8de25e237b143"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "CephPGDegraded",
+        "severity": "warning",
+        "namespace": "ceph",
+        "cluster": "dev",
+        "pool": "k8s-rbd"
+      },
+      "annotations": {
+        "summary": "PGs degraded in pool k8s-rbd"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "9d7f545e7f79daea"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "CephClusterWarningState",
+        "severity": "warning",
+        "namespace": "ceph",
+        "cluster": "dev"
+      },
+      "annotations": {
+        "summary": "Ceph health is HEALTH_WARN"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "b80b8378957f35ae"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubePersistentVolumeFillingUp",
+        "severity": "warning",
+        "namespace": "temporal",
+        "cluster": "dev",
+        "persistentvolumeclaim": "pgdata-postgresql-k8s-0"
+      },
+      "annotations": {
+        "summary": "PVC pgdata-postgresql-k8s-0 at 91%"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "ed9974c8a1bf8513"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubePodCrashLooping",
+        "severity": "critical",
+        "namespace": "temporal",
+        "cluster": "dev",
+        "pod": "temporal-k8s-0"
+      },
+      "annotations": {
+        "summary": "temporal-k8s-0 restarting"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "8599b4f48a07ed0b"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubePodCrashLooping",
+        "severity": "critical",
+        "namespace": "temporal",
+        "cluster": "dev",
+        "pod": "postgresql-k8s-0"
+      },
+      "annotations": {
+        "summary": "postgresql-k8s-0 restarting"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "9ac29c1a926b0f35"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "TargetDown",
+        "severity": "warning",
+        "namespace": "cos",
+        "cluster": "dev",
+        "job": "node-exporter"
+      },
+      "annotations": {
+        "summary": "25% of node-exporter targets down"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "9b9ae2a8d2dc2ea7"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "Watchdog",
+        "severity": "none",
+        "namespace": "cos",
+        "cluster": "dev"
+      },
+      "annotations": {
+        "summary": "Always firing: alerting pipeline is working"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "cf9f8e8e201f337a"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubeHpaMaxedOut",
+        "severity": "info",
+        "namespace": "iam",
+        "cluster": "dev",
+        "hpa": "login-ui"
+      },
+      "annotations": {
+        "summary": "HPA at max replicas"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "d2d12e243987706c"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "CephOSDDown",
+        "severity": "critical",
+        "namespace": "ceph",
+        "cluster": "dev",
+        "osd": "osd.7",
+        "host": "ceph-2"
+      },
+      "annotations": {
+        "summary": "OSD osd.7 on ceph-2 is down"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "ac1f352e717c596d"
+    }
+  ]
+}

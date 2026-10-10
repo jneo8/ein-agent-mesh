@@ -1,0 +1,48 @@
+{
+  "description": "Three unrelated things in the cos namespace at once: Loki is OOM-crashlooping and dropping pushes; Prometheus's TSDB volume is filling and compactions fail; the catalogue pod restarts on its own. Same namespace is not evidence of one cause: three incidents. Watchdog and InfoInhibitor are noise.",
+  "incidents": [
+    {
+      "priority": "critical",
+      "alerts": [
+        {
+          "alertname": "KubePodCrashLooping",
+          "pod": "loki-0"
+        },
+        {
+          "alertname": "KubeContainerOOMKilled"
+        },
+        {
+          "alertname": "LokiRequestErrors"
+        }
+      ]
+    },
+    {
+      "priority": "normal",
+      "alerts": [
+        {
+          "alertname": "KubePersistentVolumeFillingUp"
+        },
+        {
+          "alertname": "PrometheusTSDBCompactionsFailing"
+        }
+      ]
+    },
+    {
+      "priority": "normal",
+      "alerts": [
+        {
+          "alertname": "KubePodCrashLooping",
+          "pod": "catalogue-0"
+        }
+      ]
+    }
+  ],
+  "ignored": [
+    {
+      "alertname": "Watchdog"
+    },
+    {
+      "alertname": "InfoInhibitor"
+    }
+  ]
+}

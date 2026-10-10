@@ -1,0 +1,55 @@
+{
+  "description": "A quiet cluster's background hum (heartbeats, HPA notices, CPU throttling, a slow batch job) plus one real failure: node-7 is NotReady and unreachable. Also a clock skew on node-3, which is real but minor. Tests ignore precision: the hum must be dropped, the two real things kept apart from each other and from the noise.",
+  "incidents": [
+    {
+      "priority": "critical",
+      "alerts": [
+        {
+          "alertname": "KubeNodeNotReady"
+        },
+        {
+          "alertname": "KubeNodeUnreachable"
+        }
+      ]
+    },
+    {
+      "priority": "normal",
+      "alerts": [
+        {
+          "alertname": "NodeClockSkewDetected"
+        }
+      ]
+    }
+  ],
+  "ignored": [
+    {
+      "alertname": "Watchdog"
+    },
+    {
+      "alertname": "InfoInhibitor"
+    },
+    {
+      "alertname": "KubeHpaMaxedOut",
+      "hpa": "login-ui"
+    },
+    {
+      "alertname": "KubeHpaMaxedOut",
+      "hpa": "frontend"
+    },
+    {
+      "alertname": "KubeHpaMaxedOut",
+      "hpa": "api"
+    },
+    {
+      "alertname": "CPUThrottlingHigh",
+      "container": "frontend"
+    },
+    {
+      "alertname": "CPUThrottlingHigh",
+      "container": "api"
+    },
+    {
+      "alertname": "KubeJobCompletion"
+    }
+  ]
+}

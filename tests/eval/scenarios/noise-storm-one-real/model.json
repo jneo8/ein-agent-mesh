@@ -1,0 +1,65 @@
+{
+  "description": "Drop everything informational; keep the node failure; keep the clock skew separate because it is a different node.",
+  "decisions": [
+    {
+      "action": "open",
+      "priority": "critical",
+      "title": "node-7 NotReady and unreachable",
+      "reason": "same node; NotReady and Unreachable are one failure",
+      "alerts": [
+        {
+          "alertname": "KubeNodeNotReady"
+        },
+        {
+          "alertname": "KubeNodeUnreachable"
+        }
+      ]
+    },
+    {
+      "action": "open",
+      "priority": "normal",
+      "title": "clock skew on node-3",
+      "reason": "different node from the outage; real but low impact",
+      "alerts": [
+        {
+          "alertname": "NodeClockSkewDetected"
+        }
+      ]
+    },
+    {
+      "action": "ignore",
+      "reason": "heartbeat, inhibitor, HPA at max, CPU throttling and a slow job are informational with no service failure",
+      "alerts": [
+        {
+          "alertname": "Watchdog"
+        },
+        {
+          "alertname": "InfoInhibitor"
+        },
+        {
+          "alertname": "KubeHpaMaxedOut",
+          "hpa": "login-ui"
+        },
+        {
+          "alertname": "KubeHpaMaxedOut",
+          "hpa": "frontend"
+        },
+        {
+          "alertname": "KubeHpaMaxedOut",
+          "hpa": "api"
+        },
+        {
+          "alertname": "CPUThrottlingHigh",
+          "container": "frontend"
+        },
+        {
+          "alertname": "CPUThrottlingHigh",
+          "container": "api"
+        },
+        {
+          "alertname": "KubeJobCompletion"
+        }
+      ]
+    }
+  ]
+}

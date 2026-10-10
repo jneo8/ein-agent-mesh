@@ -22,7 +22,7 @@ variable "kafka_units" {
 variable "topic_prefix" {
   description = "Every ein-mesh topic starts with this; the data-integrator user gets PREFIXED ACLs on it."
   type        = string
-  default     = "ops."
+  default     = "ein."
 }
 
 variable "consumer_group_prefix" {

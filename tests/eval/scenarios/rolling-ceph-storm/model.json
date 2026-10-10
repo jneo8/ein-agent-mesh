@@ -1,0 +1,103 @@
+{
+  "description": "Wave 1 opens; later waves attach to the incident that already holds a related alert (named by a matcher, resolved against triage.state at run time) and open only what is new and unrelated.",
+  "decisions": [
+    {
+      "action": "open",
+      "priority": "critical",
+      "title": "Ceph OSD osd.3 down on ceph-2, PGs degraded",
+      "reason": "OSD down and PG degradation on the same cluster",
+      "alerts": [
+        {
+          "alertname": "CephOSDDown",
+          "osd": "osd.3",
+          "_wave": 1
+        },
+        {
+          "alertname": "CephPGDegraded"
+        }
+      ]
+    },
+    {
+      "action": "ignore",
+      "reason": "heartbeat",
+      "alerts": [
+        {
+          "alertname": "Watchdog",
+          "_wave": 1
+        },
+        {
+          "alertname": "Watchdog",
+          "_wave": 2
+        }
+      ]
+    },
+    {
+      "action": "attach",
+      "incident": {
+        "alertname": "CephOSDDown",
+        "osd": "osd.3",
+        "_wave": 1
+      },
+      "reason": "same host, same failure; osd.3 is a re-send",
+      "alerts": [
+        {
+          "alertname": "CephOSDDown",
+          "osd": "osd.3",
+          "_wave": 2
+        },
+        {
+          "alertname": "CephOSDDown",
+          "osd": "osd.7"
+        },
+        {
+          "alertname": "CephClusterWarningState"
+        }
+      ]
+    },
+    {
+      "action": "open",
+      "priority": "critical",
+      "title": "temporal-k8s-0 crash-looping",
+      "reason": "different namespace, no label ties it to the Ceph incident",
+      "alerts": [
+        {
+          "alertname": "KubePodCrashLooping",
+          "pod": "temporal-k8s-0"
+        }
+      ]
+    },
+    {
+      "action": "attach",
+      "incident": {
+        "alertname": "KubePodCrashLooping",
+        "pod": "temporal-k8s-0"
+      },
+      "reason": "same namespace as the open temporal incident",
+      "alerts": [
+        {
+          "alertname": "KubePodCrashLooping",
+          "pod": "postgresql-k8s-0"
+        },
+        {
+          "alertname": "KubePersistentVolumeFillingUp"
+        }
+      ]
+    },
+    {
+      "action": "attach",
+      "incident": {
+        "alertname": "CephOSDDown",
+        "osd": "osd.3",
+        "_wave": 1
+      },
+      "reason": "osd.3 re-sent again",
+      "alerts": [
+        {
+          "alertname": "CephOSDDown",
+          "osd": "osd.3",
+          "_wave": 3
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,171 @@
+{
+  "receiver": "ein-mesh",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "Watchdog",
+        "severity": "none",
+        "namespace": "cos",
+        "cluster": "dev"
+      },
+      "annotations": {
+        "summary": "Always firing: alerting pipeline is working"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "cf9f8e8e201f337a"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "InfoInhibitor",
+        "severity": "none",
+        "namespace": "cos",
+        "cluster": "dev"
+      },
+      "annotations": {
+        "summary": "Inhibits info-level alerts"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "78850e8361bc5fc5"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubeHpaMaxedOut",
+        "severity": "info",
+        "namespace": "iam",
+        "cluster": "dev",
+        "hpa": "login-ui"
+      },
+      "annotations": {
+        "summary": "HPA login-ui at max replicas"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "d2d12e243987706c"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubeHpaMaxedOut",
+        "severity": "info",
+        "namespace": "web",
+        "cluster": "dev",
+        "hpa": "frontend"
+      },
+      "annotations": {
+        "summary": "HPA frontend at max replicas"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "8244e8db12b12546"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubeHpaMaxedOut",
+        "severity": "info",
+        "namespace": "web",
+        "cluster": "dev",
+        "hpa": "api"
+      },
+      "annotations": {
+        "summary": "HPA api at max replicas"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "153d555e0d20236c"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "CPUThrottlingHigh",
+        "severity": "info",
+        "namespace": "web",
+        "cluster": "dev",
+        "container": "frontend",
+        "pod": "frontend-7c9f-abcde"
+      },
+      "annotations": {
+        "summary": "31% throttling of CPU in container frontend"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "71ec4bf9ef7a04fa"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "CPUThrottlingHigh",
+        "severity": "info",
+        "namespace": "web",
+        "cluster": "dev",
+        "container": "api",
+        "pod": "api-5d8b-fghij"
+      },
+      "annotations": {
+        "summary": "28% throttling of CPU in container api"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "5502e40a28c26f5d"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubeJobCompletion",
+        "severity": "info",
+        "namespace": "batch",
+        "cluster": "dev",
+        "job_name": "nightly-report-20261009"
+      },
+      "annotations": {
+        "summary": "Job nightly-report-20261009 is taking more than 12h to complete"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "be3cba7e242bc80a"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "NodeClockSkewDetected",
+        "severity": "warning",
+        "namespace": "kube-system",
+        "cluster": "dev",
+        "instance": "node-3"
+      },
+      "annotations": {
+        "summary": "Clock on node-3 is out of sync by more than 0.05s"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "5a763d3ba75688c9"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubeNodeNotReady",
+        "severity": "critical",
+        "namespace": "kube-system",
+        "cluster": "dev",
+        "node": "node-7"
+      },
+      "annotations": {
+        "summary": "node-7 has been unready for more than 15 minutes"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "6d643a147183357a"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubeNodeUnreachable",
+        "severity": "critical",
+        "namespace": "kube-system",
+        "cluster": "dev",
+        "node": "node-7"
+      },
+      "annotations": {
+        "summary": "node-7 is unreachable and some workloads may be rescheduled"
+      },
+      "startsAt": "2026-10-10T00:00:00+00:00",
+      "fingerprint": "2409939a4e9ede6d"
+    }
+  ]
+}

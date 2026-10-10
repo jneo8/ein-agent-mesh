@@ -1,0 +1,61 @@
+{
+  "description": "Group by the application the labels name, not by namespace.",
+  "decisions": [
+    {
+      "action": "open",
+      "priority": "critical",
+      "title": "loki OOM-crashlooping, push errors",
+      "reason": "same pod and application: OOMKilled, restarts, and ingest errors are one outage",
+      "alerts": [
+        {
+          "alertname": "KubePodCrashLooping",
+          "pod": "loki-0"
+        },
+        {
+          "alertname": "KubeContainerOOMKilled"
+        },
+        {
+          "alertname": "LokiRequestErrors"
+        }
+      ]
+    },
+    {
+      "action": "open",
+      "priority": "normal",
+      "title": "prometheus TSDB volume filling, compactions failing",
+      "reason": "same application: a full data volume explains failing compactions",
+      "alerts": [
+        {
+          "alertname": "KubePersistentVolumeFillingUp"
+        },
+        {
+          "alertname": "PrometheusTSDBCompactionsFailing"
+        }
+      ]
+    },
+    {
+      "action": "open",
+      "priority": "normal",
+      "title": "catalogue-0 crash-looping",
+      "reason": "different application, no related alert; not evidence of a shared cause",
+      "alerts": [
+        {
+          "alertname": "KubePodCrashLooping",
+          "pod": "catalogue-0"
+        }
+      ]
+    },
+    {
+      "action": "ignore",
+      "reason": "Watchdog and InfoInhibitor are alerting-pipeline plumbing",
+      "alerts": [
+        {
+          "alertname": "Watchdog"
+        },
+        {
+          "alertname": "InfoInhibitor"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "description": "What a well-behaved triage says: group only what the labels tie together, drop noise, never guess a cross-layer cause.",
+  "decisions": [
+    {
+      "action": "open",
+      "priority": "critical",
+      "title": "Ceph OSDs osd.3 and osd.7 down on ceph-2, PGs degraded",
+      "reason": "two OSDs on the same host are down; PG degradation and HEALTH_WARN are the same failure",
+      "alerts": [
+        {
+          "alertname": "CephOSDDown",
+          "osd": "osd.3"
+        },
+        {
+          "alertname": "CephOSDDown",
+          "osd": "osd.7"
+        },
+        {
+          "alertname": "CephPGDegraded"
+        },
+        {
+          "alertname": "CephClusterWarningState"
+        }
+      ]
+    },
+    {
+      "action": "open",
+      "priority": "critical",
+      "title": "temporal: postgresql and temporal pods crash-looping, PVC at 91%",
+      "reason": "same namespace; the database PVC filling up and both pods restarting are one service outage",
+      "alerts": [
+        {
+          "alertname": "KubePersistentVolumeFillingUp"
+        },
+        {
+          "alertname": "KubePodCrashLooping",
+          "pod": "temporal-k8s-0"
+        },
+        {
+          "alertname": "KubePodCrashLooping",
+          "pod": "postgresql-k8s-0"
+        }
+      ]
+    },
+    {
+      "action": "open",
+      "priority": "normal",
+      "title": "node-exporter targets down",
+      "reason": "scrape failures with no related service alert",
+      "alerts": [
+        {
+          "alertname": "TargetDown"
+        }
+      ]
+    },
+    {
+      "action": "ignore",
+      "reason": "Watchdog always fires; HPA at max is informational",
+      "alerts": [
+        {
+          "alertname": "Watchdog"
+        },
+        {
+          "alertname": "KubeHpaMaxedOut"
+        }
+      ]
+    }
+  ]
+}

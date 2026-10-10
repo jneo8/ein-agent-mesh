@@ -8,8 +8,8 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 
-class Trigger(BaseModel):
-    """One deduplicated alert on ``ops.triggers``. Key = cluster."""
+class Alert(BaseModel):
+    """One deduplicated alert on the alerts topic. Key = cluster."""
 
     id: str = Field(description="fingerprint:startsAt, unique per alert instance")
     cluster: str
@@ -20,6 +20,13 @@ class Trigger(BaseModel):
     labels: dict[str, str] = Field(default_factory=dict)
     annotations: dict[str, str] = Field(default_factory=dict)
     starts_at: str = ""
+    group_key: str = Field(default="", description="Alertmanager groupKey when the webhook had one, else derived from GROUP_BY labels")
+    group_labels: dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def fingerprint(self) -> str:
+        """The label-set hash Alertmanager assigns; stable across re-sends of the same alert."""
+        return self.id.split(":", 1)[0]
 
 
 class Incident(BaseModel):
@@ -33,6 +40,7 @@ class Incident(BaseModel):
     alert_ids: list[str] = Field(default_factory=list)
     alertnames: list[str] = Field(default_factory=list)
     opened_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    group_key: str = ""
 
 
 class Attach(BaseModel):
@@ -50,22 +58,13 @@ class Open(BaseModel):
     reason: str
 
 
-class Merge(BaseModel):
-    action: Literal["merge"]
-    from_: str = Field(alias="from")
-    into: str
-    reason: str
-
-    model_config = {"populate_by_name": True}
-
-
 class Ignore(BaseModel):
     action: Literal["ignore"]
     alerts: list[str]
     reason: str
 
 
-Decision = Annotated[Attach | Open | Merge | Ignore, Field(discriminator="action")]
+Decision = Annotated[Attach | Open | Ignore, Field(discriminator="action")]
 
 
 class TriageOutput(BaseModel):
@@ -73,26 +72,40 @@ class TriageOutput(BaseModel):
 
 
 class TriageState(BaseModel):
-    """Compacted snapshot on ``ops.triage.state``, one record per cluster."""
+    """Compacted snapshot on the triage.state topic, one record per cluster."""
 
     cluster: str
     incidents: list[Incident]
+    ignored: list[str] = Field(default_factory=list, description="fingerprints the model told us to ignore; re-sends are ignored by rule")
 
 
 class IncidentMessage(BaseModel):
-    """What goes on ``ops.incidents.<priority>`` for the orchestrator."""
+    """What goes on the incidents.<priority> topics for the orchestrator."""
 
     root_id: str
     cluster: str
     priority: Literal["critical", "normal"]
     title: str
     reason: str
-    alerts: list[Trigger]
+    alerts: list[Alert]
     opened_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
+class InvestigationState(BaseModel):
+    """Compacted snapshot on the investigation.state topic, one record per root_id. Owned by the
+    orchestrator; the outward-facing picture of where an investigation is."""
+
+    root_id: str
+    cluster: str
+    priority: Literal["critical", "normal"]
+    title: str
+    status: Literal["investigating", "waiting", "closed"]
+    opened_at: str
+    updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
 class Event(BaseModel):
-    """Audit record on ``ops.investigation.events``."""
+    """Audit record on the investigation.events topic."""
 
     root_id: str
     role: str = "triage"
