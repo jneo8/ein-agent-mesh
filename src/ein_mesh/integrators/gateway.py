@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiohttp import web
@@ -51,16 +52,26 @@ async def serve(bus: MessageBus, topics: Topics, host: str, port: int) -> None:
 
     async def webhook(request: web.Request) -> web.Response:
         payload = await request.json()
-        sent = 0
+        sent: dict[str, list[Alert]] = {}  # cluster -> produced
+        duplicates = 0
         for alert in payload.get("alerts", []):
             t = to_alert(alert, payload.get("groupKey"), payload.get("groupLabels"), grouping)
             if t.id in seen:
+                duplicates += 1
                 continue
             seen.add(t.id)
             await bus.produce(topics.alerts, t.cluster, t)
-            sent += 1
-        log.info("webhook: %d alerts, %d new", len(payload.get("alerts", [])), sent)
-        return web.json_response({"received": len(payload.get("alerts", [])), "produced": sent})
+            sent.setdefault(t.cluster, []).append(t)
+        produced = sum(len(v) for v in sent.values())
+        for cluster, alerts in sent.items():
+            counts: dict[str, int] = {}
+            for a in alerts:
+                counts[f"{a.alertname}/{a.status}"] = counts.get(f"{a.alertname}/{a.status}", 0) + 1
+            log.info("webhook: %d alerts for cluster %s -> %s: %s", len(alerts), cluster, topics.alerts,
+                     ", ".join(f"{n} x{c}" if c > 1 else n for n, c in sorted(counts.items())))
+        if duplicates:
+            log.info("webhook: %d alerts already seen (same fingerprint and startsAt), not produced", duplicates)
+        return web.json_response({"received": len(payload.get("alerts", [])), "produced": produced})
 
     app = web.Application()
     app.router.add_post("/alertmanager", webhook)
@@ -70,8 +81,6 @@ async def serve(bus: MessageBus, topics: Topics, host: str, port: int) -> None:
     await web.TCPSite(runner, host, port).start()
     log.info("gateway listening on %s:%d -> %s", host, port, topics.alerts)
     try:
-        import asyncio
-
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()

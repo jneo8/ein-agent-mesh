@@ -61,7 +61,7 @@ class Role(ABC):
         try:
             await self.bus.verify(self.topics)
             await self.restore()
-            log.info("%s consuming %s", self.name, self.inputs)
+            log.info("%s ready, waiting for records", self.name)
             while True:
                 records = await self.bus.poll(self.poll_timeout_ms, self.poll_max_records())
                 if await self.handle(records):

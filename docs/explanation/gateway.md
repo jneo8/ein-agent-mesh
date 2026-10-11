@@ -52,6 +52,6 @@
 
 - The recorded storm lives in `tests/eval/scenarios/ceph-osd-storm/alerts.json`, an Alertmanager
   webhook payload.
-- `just fire` curls it at the gateway with `startsAt` set to now: the whole live path.
+- `just gateway-fire` curls it at the gateway with `startsAt` set to now: the whole live path.
 - In unit tests the same fixture goes through `to_alert` onto an `InMemoryBus`, no HTTP at all.
 - There is no program that writes to `alerts` while bypassing the gateway.

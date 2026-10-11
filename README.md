@@ -11,7 +11,7 @@ v1 shape from the design note: Juju `kafka-k8s` deployed with Terraform, plus th
 Alertmanager ──webhook──▶ ┌───────────────────┐                ┌──────────────────────────┐  batch per cluster   ┌────────────────────────────┐
  (not wired in v1)        │ gateway           │  dedup alert   │ alerts                   │  30 s or 50 alerts   │ triage                     │
                           │ POST /alertmanager│──key=cluster──▶│ $TOPIC_ALERTS · delete   │─────────────────────▶│ 1 batch = 1 LLM call       │
-just fire ───────────────▶│ dedup: fingerprint│                └──────────────────────────┘  group ein-triage    │ validate ─┬─▶ apply        │
+just gateway-fire ───────▶│ dedup: fingerprint│                └──────────────────────────┘  group ein-triage    │ validate ─┬─▶ apply        │
  (curl storm.json)        │   + startsAt      │                                                                  │ fallback ─┘   commit       │
                           └───────────────────┘                ┌──────────────────────────┐                      │                            │
                                                                │ triage.state             │◀── open incidents ───│ memory: open incidents     │
@@ -72,10 +72,10 @@ The provider reads the local juju client, so run it wherever `juju` is logged
 in to a Kubernetes controller:
 
 ```bash
-just tf-init
-just tf-plan
-just tf-apply
-just kafka-creds      # KAFKA_USERNAME / KAFKA_PASSWORD for .env
+just deploy-init
+just deploy-plan
+just deploy-apply
+just deploy-creds     # KAFKA_USERNAME / KAFKA_PASSWORD for .env
 ```
 
 ## Run it
@@ -97,7 +97,7 @@ from the environment; the `justfile` wraps each one and loads `.env` first:
 The helper scripts that fill these in for one specific environment are kept
 outside git (`scripts/` holds symlinks, excluded via `.git/info/exclude`).
 
-1. Topics (the only deploy prerequisite): `just init`
+1. Topics (the only deploy prerequisite): `just kafka-init`
 2. Four terminals:
 
 ```bash
@@ -105,11 +105,11 @@ just tail             # every mesh topic; or e.g. just tail incidents.critical i
 just triage           # detected → open: batch → one LLM call → validate → apply → commit
 just orchestrator     # open → investigating (PoC slice: state + event, no contracts yet)
 just gateway          # Alertmanager webhook → alerts, on :8088
-just fire             # curl the recorded storm at the gateway with startsAt set to now
+just gateway-fire     # curl the recorded storm at the gateway with startsAt set to now
 ```
 
 The storm is test data: `tests/eval/scenarios/ceph-osd-storm/alerts.json` is an Alertmanager
-webhook payload with 10 alerts, and `just fire` is a curl of it. Roles are `Role` subclasses on a
+webhook payload with 10 alerts, and `just gateway-fire` is a curl of it. Roles are `Role` subclasses on a
 `MessageBus`, so the same code runs on an `InMemoryBus` in tests, see
 [roles](docs/reference/roles.md#the-role-base-class).
 
@@ -131,4 +131,4 @@ Tuning: `TRIAGE_BATCH_SECONDS` (default 30), `TRIAGE_BATCH_SIZE` (50),
 
 Registry/heartbeat, scheduler, topology lint, profiles, per-role Kafka principals,
 transactional offset commit (roles commit after the producer acks instead), contracts,
-`ask_user`, closing, and every role except triage and the orchestrator's first transition. Alertmanager is not wired to the gateway: `just fire` replays the recorded storm instead.
+`ask_user`, closing, and every role except triage and the orchestrator's first transition. Alertmanager is not wired to the gateway: `just gateway-fire` replays the recorded storm instead.

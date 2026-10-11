@@ -24,9 +24,21 @@ A name that does not start with `TOPIC_PREFIX` is outside the data-integrator's 
 own grant.
 
 `ein-mesh init` creates all six topics with `TOPIC_PARTITIONS` partitions and `TOPIC_REPLICATION`
-replicas, then checks that every mesh topic has exactly that partition count; it fails on a
-mismatch instead of altering a topic. Every role runs the same check at startup and refuses to
-start on a mismatch. Consumer groups are `${KAFKA_GROUP_PREFIX}<name>`, default prefix `ein-`.
+replicas. For a topic that already exists it compares the topic-level config (cleanup policy,
+retention) with the table below and alters it to match, logging each change; a key set on the
+broker that the table does not list falls back to the broker default. This needs `DescribeConfigs`
+and `AlterConfigs` on the topics, which the data-integrator's `producer,consumer` roles do not grant
+(the Kafka charm only hands out Create/Write/Read/Describe); with that user init logs a warning and
+skips the comparison, and topic config is changed with the charm's own tooling inside the broker
+container instead. It then checks that every mesh topic has exactly `TOPIC_PARTITIONS` partitions
+and fails on a mismatch instead of altering a topic. Every role runs the partition check at startup and refuses to start on a mismatch. Consumer
+groups are `${KAFKA_GROUP_PREFIX}<name>`, default prefix `ein-`.
+
+`ein-mesh reset` (development only) deletes every mesh topic and runs init again, so all records
+and every group's committed offsets are gone and the next role start begins from an empty mesh. It
+refuses while any `${KAFKA_GROUP_PREFIX}*` group has members. It needs `DELETE` on the topics,
+which the Terraform module requests through the data-integrator's `entity-permissions` (see
+[Terraform](#terraform)).
 
 ## Partitions
 
@@ -200,4 +212,10 @@ The design reserves further kinds for later roles, including `report` for sub-ag
 
 `deploy/terraform` creates no topics. It deploys `kafka-k8s` and a `data-integrator` whose user
 gets `producer,consumer` on `${topic_prefix}*` (PREFIXED) and on consumer groups
-`${consumer_group_prefix}*`. Variables and defaults are in `deploy/terraform/variables.tf`.
+`${consumer_group_prefix}*`, plus `DELETE` on `${topic_prefix}*` through `entity-permissions` for
+`ein-mesh reset`. Variables and defaults are in `deploy/terraform/variables.tf`.
+
+The Kafka charm writes a client's ACLs once, when the integration is created, and ignores later
+changes to `topic-name`, `extra-user-roles` or `entity-permissions`. To apply a change, replace the
+integration: `terraform apply -replace=juju_integration.kafka_client`. That mints a new user, so
+refresh `KAFKA_USERNAME` / `KAFKA_PASSWORD` (`just deploy-creds`) afterwards.

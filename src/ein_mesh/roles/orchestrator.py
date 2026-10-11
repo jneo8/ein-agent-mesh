@@ -37,7 +37,11 @@ class Orchestrator(Role):
         for r in await self.bus.read_to_end(self.topics.investigation_state):
             st = InvestigationState.model_validate(r.value)
             self.state[st.root_id] = st
-        log.info("restored state: %d investigations", len(self.state))
+        by_status: dict[str, int] = {}
+        for st in self.state.values():
+            by_status[st.status] = by_status.get(st.status, 0) + 1
+        log.info("restored %d investigations%s", len(self.state),
+                 ": " + ", ".join(f"{n} {s}" for s, n in sorted(by_status.items())) if by_status else "")
 
     async def handle(self, records: list[Record]) -> bool:
         for r in records:
@@ -55,11 +59,12 @@ class Orchestrator(Role):
 
     async def on_incident(self, inc: IncidentMessage) -> None:
         if inc.root_id in self.state:
-            log.info("incident %s already known (%s), skipping", inc.root_id, self.state[inc.root_id].status)
+            log.info("incident %s re-delivered, already %s, skipping", inc.root_id, self.state[inc.root_id].status)
             return
         st = InvestigationState(root_id=inc.root_id, cluster=inc.cluster, priority=inc.priority,
                                 title=inc.title, status="investigating", opened_at=inc.opened_at)
         await self._write_state(st)
         await self.event(inc.root_id, "investigation.started",
                          {"priority": inc.priority, "title": inc.title, "alerts": [a.id for a in inc.alerts]})
-        log.info("investigating %s [%s] %s (%d alerts)", inc.root_id, inc.priority, inc.title, len(inc.alerts))
+        log.info("started investigation %s [%s] %r: %d alerts, status open -> investigating, state written to %s",
+                 inc.root_id, inc.priority, inc.title, len(inc.alerts), self.topics.investigation_state)

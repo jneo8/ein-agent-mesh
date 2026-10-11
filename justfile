@@ -44,35 +44,48 @@ eval *args:
 eval-llm *args:
     uv run --directory {{ root }} --group test python -m tests.eval --llm --show {{ args }}
 
-[group('kafka')]
+# deploy-*: the Kafka deployment itself (Terraform + Juju). kafka-*: the topics and groups on a
+# running broker. Recipe names carry their group as prefix so verbs like init or reset stay unambiguous.
+
+[group('deploy')]
 [doc('terraform init in deploy/terraform.')]
-tf-init:
+deploy-init:
     terraform -chdir={{ root }}/deploy/terraform init
 
-[group('kafka')]
+[group('deploy')]
 [doc('terraform plan, saved to ein-mesh.tfplan.')]
-tf-plan:
+deploy-plan:
     terraform -chdir={{ root }}/deploy/terraform plan -out=ein-mesh.tfplan
 
-[group('kafka')]
+[group('deploy')]
 [doc('terraform apply of the saved plan.')]
-tf-apply:
+deploy-apply:
     terraform -chdir={{ root }}/deploy/terraform apply ein-mesh.tfplan
 
-[group('kafka')]
+[group('deploy')]
 [doc('Print the data-integrator credentials (KAFKA_USERNAME / KAFKA_PASSWORD).')]
-kafka-creds:
+deploy-creds:
     juju run ein-mesh-client/leader get-credentials
 
 [group('kafka')]
 [doc('Create every mesh topic. The only deploy prerequisite; safe to re-run.')]
-init:
+kafka-init:
     uv run --directory {{ root }} ein-mesh init
 
 [group('kafka')]
-[doc('Describe the ein-* consumer groups: who is consuming what, and their lag. Needs kafka-consumer-groups.sh on PATH and a client.properties.')]
-roles client_properties='client.properties':
-    kafka-consumer-groups.sh --bootstrap-server "$KAFKA_BOOTSTRAP" --command-config {{ client_properties }} --describe --all-groups | grep -E '^GROUP|^ein-'
+[doc('Development only: delete and recreate every mesh topic, empty. Stop the roles first. `just kafka-reset --yes` skips the prompt.')]
+kafka-reset *args:
+    uv run --directory {{ root }} ein-mesh reset {{ args }}
+
+[group('kafka')]
+[doc('Every mesh topic: partitions and record count. `just kafka-topics --watch 5` refreshes until Ctrl-C.')]
+kafka-topics *args:
+    uv run --directory {{ root }} ein-mesh topics {{ args }}
+
+[group('kafka')]
+[doc('Who is consuming: every ${KAFKA_GROUP_PREFIX}* consumer group with members, assignments and lag.')]
+kafka-roles:
+    uv run --directory {{ root }} ein-mesh roles
 
 [group('roles')]
 [doc('Triage role: detected → open.')]
@@ -95,8 +108,8 @@ tail *topics:
     uv run --directory {{ root }} ein-mesh tail {{ topics }}
 
 [group('integrators')]
-[doc('Replay the recorded storm at the gateway: curl the ceph-osd-storm scenario with startsAt set to now.')]
-fire cluster='dev':
+[doc('Replay the recorded storm at a running gateway: curl the ceph-osd-storm scenario with startsAt set to now.')]
+gateway-fire cluster='dev':
     jq --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg c '{{ cluster }}' \
         '.alerts[] |= (.startsAt = $now | .labels.cluster = $c)' {{ storm }} \
         | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- {{ gateway_url }}/alertmanager

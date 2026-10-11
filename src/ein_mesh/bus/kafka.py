@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
-from aiokafka.errors import TopicAlreadyExistsError
+from aiokafka.admin.config_resource import ConfigResource, ConfigResourceType
+from aiokafka.coordinator.protocol import ConsumerProtocolMemberAssignment
+from aiokafka.errors import TopicAuthorizationFailedError, for_code
+from aiokafka.structs import TopicPartition
 
 from ein_mesh.bus.base import MessageBus, Record
 from ein_mesh.config import KafkaSettings, Topics
@@ -78,6 +82,69 @@ async def partition_counts(admin: AIOKafkaAdminClient, names: list[str]) -> dict
     return {name: found.get(name) for name in names}
 
 
+DYNAMIC_TOPIC_CONFIG = 1  # DescribeConfigs config_source: set on the topic itself, not a broker default
+TOPIC_ALREADY_EXISTS = 36
+UNKNOWN_TOPIC = 3
+
+
+async def topic_configs(admin: AIOKafkaAdminClient, names: list[str]) -> dict[str, dict[str, str]]:
+    """The topic-level config actually set on each named topic (broker defaults excluded). Raises
+    the Kafka error for a resource the broker refused, e.g. ``TopicAuthorizationFailedError`` when
+    the user lacks DescribeConfigs."""
+    out: dict[str, dict[str, str]] = {name: {} for name in names}
+    responses = await admin.describe_configs([ConfigResource(ConfigResourceType.TOPIC, n) for n in names])
+    for resp in responses:
+        for resource in resp.resources:
+            # (error_code, error_message, resource_type, resource_name, config_entries)
+            code, message, name, entries = resource[0], resource[1], resource[3], resource[4]
+            if code:
+                raise for_code(code)(f"describe configs of {name}: {message}")
+            for entry in entries:
+                # (config_name, config_value, read_only, is_default | config_source, is_sensitive, ...)
+                key, value, flag = entry[0], entry[1], entry[3]
+                dynamic = (not flag) if isinstance(flag, bool) else flag == DYNAMIC_TOPIC_CONFIG
+                if dynamic and value is not None:
+                    out.setdefault(name, {})[key] = value
+    return out
+
+
+async def reconcile_topic_configs(admin: AIOKafkaAdminClient, topics: Topics, names: list[str]) -> list[str]:
+    """Make each existing topic's config equal to ``topics.all()``: keys we want are set, keys we do
+    not want fall back to broker defaults. Returns the topics that were changed. Partition counts are
+    not touched here; those cannot be reconciled, see ``verify_layout``."""
+    try:
+        current = await topic_configs(admin, names)
+    except TopicAuthorizationFailedError as e:
+        log.warning("topic config check skipped: this user may not DescribeConfigs/AlterConfigs (%s). "
+                    "Grant the admin role or run init with admin credentials.", e)
+        return []
+    changed: list[str] = []
+    for name in names:
+        drift = topics.config_drift(name, current.get(name, {}))
+        if not drift:
+            continue
+        for key, (old, new) in drift.items():
+            log.info("topic %s: %s %s -> %s", name, key, old if old is not None else "(default)",
+                     new if new is not None else "(default)")
+        # AlterConfigs replaces the whole topic-level config, which is exactly the intent.
+        responses = await admin.alter_configs([ConfigResource(ConfigResourceType.TOPIC, name, configs=topics.all()[name])])
+        for resp in responses:
+            for resource in resp.resources:  # (error_code, error_message, resource_type, resource_name)
+                if resource[0]:
+                    raise for_code(resource[0])(f"alter configs of {resource[3]}: {resource[1]}")
+        changed.append(name)
+    return changed
+
+
+async def wait_for_topics(admin: AIOKafkaAdminClient, names: list[str], attempts: int = 20) -> None:
+    """CreateTopics returns before every broker's metadata shows the new topics; poll until it does."""
+    for _ in range(attempts):
+        counts = await partition_counts(admin, names)
+        if all(counts.get(n) for n in names):
+            return
+        await asyncio.sleep(0.5)
+
+
 async def verify_layout(admin: AIOKafkaAdminClient, topics: Topics) -> None:
     """Raise ``RuntimeError`` unless every mesh topic exists with ``topics.partitions`` partitions."""
     errors = topics.layout_errors(await partition_counts(admin, list(topics.all())))
@@ -85,50 +152,181 @@ async def verify_layout(admin: AIOKafkaAdminClient, topics: Topics) -> None:
         raise RuntimeError("topic layout mismatch:\n  " + "\n  ".join(errors))
 
 
-async def create_topics(settings: KafkaSettings, topics: Topics) -> list[str]:
+async def create_topics(settings: KafkaSettings, topics: Topics) -> tuple[list[str], list[str]]:
     """The v1 init step: make every mesh topic exist with ``topics.partitions`` partitions and
-    ``topics.replication`` replicas, then check the layout. Safe to re-run: existing topics are left
-    alone, but one with a different partition count makes init fail, because co-partitioning cannot
+    ``topics.replication`` replicas, bring existing topics' config (cleanup policy, retention) in
+    line with the layout, then check the partition counts. Returns ``(created, updated)``. Safe to
+    re-run. A topic with a different partition count makes init fail, because co-partitioning cannot
     be repaired in place."""
     admin = AIOKafkaAdminClient(**settings.client_kwargs())
     await admin.start()
     created: list[str] = []
+    existing: list[str] = []
     try:
         for name, cfg in topics.all().items():
-            try:
-                await admin.create_topics([
-                    NewTopic(name, num_partitions=topics.partitions, replication_factor=topics.replication,
-                             topic_configs=cfg)
-                ])
-                created.append(name)
-            except TopicAlreadyExistsError:
-                log.info("topic %s already exists", name)
+            resp = await admin.create_topics([
+                NewTopic(name, num_partitions=topics.partitions, replication_factor=topics.replication,
+                         topic_configs=cfg)
+            ])
+            # aiokafka returns per-topic error codes instead of raising; read them.
+            for topic, code, message in resp.topic_errors:
+                if code == 0:
+                    created.append(topic)
+                elif code == TOPIC_ALREADY_EXISTS:
+                    existing.append(topic)
+                else:
+                    raise for_code(code)(f"create topic {topic}: {message}")
+        if created:
+            await wait_for_topics(admin, created)
+        updated = await reconcile_topic_configs(admin, topics, existing) if existing else []
+        for name in existing:
+            log.info("topic %s already exists%s", name, " (config updated)" if name in updated else "")
         await verify_layout(admin, topics)
     finally:
         await admin.close()
-    return created
+    return created, updated
+
+
+async def wait_for_topics_gone(admin: AIOKafkaAdminClient, names: list[str], attempts: int = 60) -> None:
+    """DeleteTopics only marks topics for deletion; creating one again before the broker has finished
+    answers TopicAlreadyExists, so poll until metadata no longer lists any of them."""
+    counts: dict[str, int | None] = {}
+    for _ in range(attempts):
+        counts = await partition_counts(admin, names)
+        if not any(counts.get(n) for n in names):
+            return
+        await asyncio.sleep(0.5)
+    raise RuntimeError(f"topics still present after delete: {[n for n in names if counts.get(n)]}")
+
+
+async def reset_topics(settings: KafkaSettings, topics: Topics) -> tuple[list[str], list[str]]:
+    """Development only: wipe every mesh topic by deleting and recreating it, returning
+    ``(deleted, created)``. Refuses while any role is connected, because a live consumer would keep
+    its in-memory position and could skip records written to the fresh topic. Deleting a topic also
+    drops the committed offsets of every group for it, so roles restart from the beginning. Needs
+    ``DELETE`` on the topics, which the Terraform module grants through the data-integrator's
+    ``entity-permissions``."""
+    active = [g for g in await consumer_groups(settings, settings.group_prefix) if g["members"]]
+    if active:
+        raise RuntimeError("roles still connected, stop them first: "
+                           + ", ".join(f"{g['group']} ({len(g['members'])} members)" for g in active))
+    admin = AIOKafkaAdminClient(**settings.client_kwargs())
+    await admin.start()
+    deleted: list[str] = []
+    try:
+        names = list(topics.all())
+        present = [n for n, c in (await partition_counts(admin, names)).items() if c]
+        if present:
+            resp = await admin.delete_topics(present)
+            for topic, code in resp.topic_error_codes:
+                if code == 0:
+                    deleted.append(topic)
+                elif code != UNKNOWN_TOPIC:
+                    raise for_code(code)(f"delete topic {topic}")
+            await wait_for_topics_gone(admin, deleted)
+            log.info("deleted %s", deleted)
+    finally:
+        await admin.close()
+    created, _updated = await create_topics(settings, topics)
+    return deleted, created
+
+
+async def topic_status(settings: KafkaSettings, topics: Topics) -> list[dict]:
+    """One row per mesh topic: partition count against the configured one and how many records it
+    holds (end minus beginning offsets, so a compacted topic counts what compaction has kept).
+    A topic that does not exist has ``partitions`` ``None``."""
+    admin = AIOKafkaAdminClient(**settings.client_kwargs())
+    await admin.start()
+    c = consumer(settings, None)
+    await c.start()
+    rows: list[dict] = []
+    try:
+        counts = await partition_counts(admin, list(topics.all()))
+        for name, n in counts.items():
+            if not n:
+                rows.append({"topic": name, "partitions": None, "records": None, "partitions_ok": False})
+                continue
+            tps = [TopicPartition(name, p) for p in range(n)]
+            begin, end = await c.beginning_offsets(tps), await c.end_offsets(tps)
+            rows.append({"topic": name, "partitions": n, "partitions_ok": n == topics.partitions,
+                         "records": sum(end[tp] - begin[tp] for tp in tps)})
+    finally:
+        await c.stop()
+        await admin.close()
+    return rows
+
+
+async def consumer_groups(settings: KafkaSettings, prefix: str) -> list[dict]:
+    """The roster: every consumer group whose id starts with ``prefix`` (the mesh's roles), with its
+    state, members and per-topic lag. A group with no members is a role that stopped but whose
+    offsets have not expired yet. Groups the user may not Describe are simply not listed."""
+    admin = AIOKafkaAdminClient(**settings.client_kwargs())
+    await admin.start()
+    c = consumer(settings, None)  # no subscription; only used for end offsets
+    await c.start()
+    out: list[dict] = []
+    try:
+        ids = sorted(g for g, _proto in await admin.list_consumer_groups() if g.startswith(prefix))
+        if not ids:
+            return out
+        # One group per request: aiokafka 0.14 sends DescribeGroups v3 but decodes the reply with the
+        # v2 schema, which lacks the per-group authorized_operations field. With a single group the
+        # extra bytes trail harmlessly; with two or more the second group decodes misaligned and the
+        # connection dies with "Buffer underrun decoding string".
+        groups: dict[str, tuple] = {}
+        for gid in ids:
+            for resp in await admin.describe_consumer_groups([gid]):
+                for g in resp.groups:  # (error_code, group, state, protocol_type, protocol, members, ...)
+                    groups[g[1]] = g
+        for gid in ids:
+            g = groups.get(gid)
+            members = []
+            for m in (g[5] if g else []):  # (member_id, client_id, client_host, metadata, assignment, ...)
+                assigned: dict[str, list[int]] = {}
+                if m[4]:
+                    for topic, parts in ConsumerProtocolMemberAssignment.decode(m[4]).assignment:
+                        assigned[topic] = sorted(parts)
+                members.append({"client_id": m[1], "host": m[2].lstrip("/"), "assignment": assigned})
+            committed = await admin.list_consumer_group_offsets(gid)
+            tps = list(committed)
+            ends = await c.end_offsets(tps) if tps else {}
+            lag: dict[str, int] = {}
+            for tp, om in committed.items():
+                lag[tp.topic] = lag.get(tp.topic, 0) + max(0, ends.get(tp, om.offset) - om.offset)
+            out.append({"group": gid, "state": g[2] if g else "unknown", "members": members, "lag": lag})
+    finally:
+        await c.stop()
+        await admin.close()
+    return out
 
 
 class KafkaBus(MessageBus):
     def __init__(self, settings: KafkaSettings) -> None:
         self.settings = settings
-        self._producer = producer(settings)
+        # aiokafka clients must be created inside a running event loop, so both are built in start().
+        self._producer: AIOKafkaProducer | None = None
         self._consumer: AIOKafkaConsumer | None = None
         self._sub: tuple[str | None, tuple[str, ...], dict] | None = None
 
     async def start(self) -> None:
+        self._producer = producer(self.settings)
         await self._producer.start()
         if self._sub:
             group, topics, opts = self._sub
             self._consumer = consumer(self.settings, group, *topics, **opts)
             await self._consumer.start()
+            log.info("consuming %s as group %s%s", ", ".join(topics),
+                     f"{self.settings.group_prefix}{group}" if group else "(none)",
+                     "" if group else ", offsets not committed")
 
     async def stop(self) -> None:
         if self._consumer:
             await self._consumer.stop()
-        await self._producer.stop()
+        if self._producer:
+            await self._producer.stop()
 
     async def _produce(self, topic: str, key: str | None, value: dict) -> None:
+        assert self._producer is not None, "start() before produce()"
         await self._producer.send_and_wait(topic, key=key, value=value)
 
     async def read_to_end(self, topic: str) -> list[Record]:

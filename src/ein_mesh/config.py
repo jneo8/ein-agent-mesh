@@ -98,6 +98,18 @@ class Topics:
             self.investigation_state: {"cleanup.policy": "compact"},
         }
 
+    def config_drift(self, name: str, current: dict[str, str]) -> dict[str, tuple[str | None, str | None]]:
+        """How a topic's dynamic config on the broker differs from ``all()[name]``. ``current`` is the
+        topic-level config actually set (broker defaults excluded). Returns ``key -> (broker value,
+        wanted value)`` with ``None`` for absent; empty when the topic already matches. Keys the
+        broker has but this layout does not are drift too: init owns the whole topic config."""
+        wanted = self.all()[name]
+        drift: dict[str, tuple[str | None, str | None]] = {}
+        for key in sorted(set(wanted) | set(current)):
+            if wanted.get(key) != current.get(key):
+                drift[key] = (current.get(key), wanted.get(key))
+        return drift
+
     def layout_errors(self, counts: dict[str, int | None]) -> list[str]:
         """Why the broker's topics do not match this layout. ``counts`` maps each mesh topic to its
         partition count on the broker, ``None`` when it does not exist. Empty means everything is

@@ -149,7 +149,7 @@ Scenarios, each probing one thing triage must get right:
 | `rolling-ceph-storm` | 11 in 3 waves | 2 incidents, 2 ignored, 6 attaches | Alerts keep arriving: wave 2 and 3 must attach to incidents restored from `triage.state` by a restarted triage (new OSD, health warning, re-sent osd.3, second temporal pod, PVC) and open only what is new; one LLM call per wave; the orchestrator must not re-open on replay. |
 
 `just eval-test` runs the harness self-tests in `tests/eval/test_eval.py` (pytest); `just unit-test` runs
-`tests/unit` only. `just fire` curls its `alerts.json` at a live gateway.
+`tests/unit` only. `just gateway-fire` curls its `alerts.json` at a live gateway.
 
 ## Common settings
 
@@ -170,9 +170,11 @@ All producers run with `enable_idempotence=True` and gzip compression.
 
 Creates every topic in the [topics reference](topics.md) with `TOPIC_PARTITIONS` partitions
 (default 12) and `TOPIC_REPLICATION` replicas (default 1), applying each topic's cleanup and
-retention config. Existing topics are left unchanged, then every mesh topic's partition count is
-compared with the setting; a mismatch exits non-zero and names the topic. Safe to re-run. Needs no
-running role; it is the only deploy prerequisite. See [partitions](topics.md#partitions).
+retention config. An existing topic's config is compared with the reference and altered to match
+(each change is logged; the output lists the topics touched). Then every mesh topic's partition
+count is compared with the setting; a mismatch exits non-zero and names the topic, since partitions
+cannot be changed in place. Safe to re-run. Needs no running role; it is the only deploy
+prerequisite. See [partitions](topics.md#partitions).
 
 ## `ein-mesh gateway`
 
@@ -216,7 +218,7 @@ Role. Batches alerts per cluster, classifies each batch with one LLM call, opens
 | Reads | `alerts`, consumer group `${KAFKA_GROUP_PREFIX}triage`; `triage.state` at startup without a group |
 | Writes | `incidents.<priority>` (key = `root_id`), `investigation.events` (key = `root_id`, or `triage-<cluster>` for `alerts.ignored`), `triage.state` (key = cluster) |
 | State | In-memory `cluster -> incident id -> Incident` (each with its `group_key`) and `cluster -> ignored fingerprints`. Restored from `triage.state` at startup, rewritten after every change. |
-| LLM | One `litellm.acompletion` per batch of alerts the rules did not settle, `temperature=0`, `response_format=json_object`. |
+| LLM | One `litellm.acompletion` per batch of alerts the rules did not settle, `response_format=json_object`, no sampling parameters (Gemini 3 deprecates them; validation and the fallback guard the output instead). |
 
 **Settings**
 
@@ -287,6 +289,39 @@ before restoring state and refuses to start on a mismatch. Running more than one
 additionally needs the range assignor and state load/unload on rebalance, neither of which this
 slice implements.
 
+## `ein-mesh topics [--watch SECONDS]`
+
+One row per mesh topic: partition count and record count. For watching the mesh while it runs.
+
+- Records are end offset minus beginning offset summed over partitions. On a compacted topic that
+  is what compaction has kept, not how many records were ever written.
+- A partition count that differs from `TOPIC_PARTITIONS` is shown as `12!=24`; a missing topic as
+  `missing` (`ein-mesh init` creates it).
+- `--watch 5` clears the screen and refreshes every 5 seconds until Ctrl-C.
+- Topic config (cleanup policy, retention) is not shown: the data-integrator user cannot
+  `DescribeConfigs`, see the [topics reference](topics.md#naming).
+
+## `ein-mesh roles`
+
+Lists every consumer group whose id starts with `KAFKA_GROUP_PREFIX`: one line per group with its
+state, member count and lag per topic, then one line per member with its client id, host and
+assigned partitions. This is the roster of running roles (design note: "怎麼知道誰在消費").
+
+- A group with no members is a role that stopped; the broker keeps its offsets for
+  `offsets.retention.minutes` (default 7 days).
+- Readers without a group (`tail`, a role restoring state from a compacted topic) do not appear.
+- Lag is end offset minus committed offset, summed over the group's partitions of each topic.
+- Needs only the data-integrator user: `Describe` on `${KAFKA_GROUP_PREFIX}*` groups and the mesh
+  topics. Groups outside the prefix are not visible to it and not listed.
+
+## `ein-mesh reset [--yes]`
+
+Development only. Deletes every mesh topic and recreates it with `ein-mesh init`, which empties the
+mesh and drops every role's committed offsets along with the topics. Asks for confirmation unless
+`--yes`. Refuses while any `${KAFKA_GROUP_PREFIX}*` group has a member: stop `triage`,
+`orchestrator`, `gateway` and `tail` first. Needs the `DELETE` topic ACL that the Terraform module
+grants (`entity-permissions`); without it the command fails and says how to apply the grant.
+
 ## `ein-mesh tail [TOPIC]...`
 
 Integrator, `src/ein_mesh/integrators/tail.py`. Prints every record on the given topics as
@@ -299,7 +334,7 @@ Integrator, `src/ein_mesh/integrators/tail.py`. Prints every record on the given
 
 No consumer group, so it never affects anyone's offsets. `just tail incidents.critical investigation.events`.
 
-## `just fire`
+## `just gateway-fire`
 
 Not a program. A `curl` of `tests/eval/scenarios/ceph-osd-storm/alerts.json` at the gateway, with every `startsAt` set
 to now by `jq` so each replay is a new alert instance for the gateway's dedup. Arguments: `cluster`

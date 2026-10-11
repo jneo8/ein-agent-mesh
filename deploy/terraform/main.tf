@@ -32,6 +32,11 @@ resource "juju_application" "kafka" {
 # Kafka keeps client listeners off until something integrates. data-integrator
 # is that something: it also mints the SASL/SCRAM user the mesh processes use.
 # topic-name ending in "*" becomes a PREFIXED ACL in the charm.
+# entity-permissions adds DELETE on the same prefix so `ein-mesh reset` can wipe
+# the topics in development. The Kafka charm applies these ACLs once, when the
+# integration is created: after changing them, replace the integration
+# (`terraform apply -replace=juju_integration.kafka_client`), which also mints a
+# new user, so refresh KAFKA_USERNAME / KAFKA_PASSWORD afterwards.
 resource "juju_application" "data_integrator" {
   name       = "ein-mesh-client"
   model_uuid = juju_model.ein_mesh.uuid
@@ -46,6 +51,9 @@ resource "juju_application" "data_integrator" {
     topic-name            = "${var.topic_prefix}*"
     extra-user-roles      = "producer,consumer"
     consumer-group-prefix = var.consumer_group_prefix
+    entity-permissions = jsonencode([
+      { resource_name = "${var.topic_prefix}*", resource_type = "TOPIC", privileges = ["DELETE"] },
+    ])
   }
 }
 

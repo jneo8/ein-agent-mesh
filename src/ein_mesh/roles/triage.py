@@ -37,6 +37,14 @@ from ein_mesh.schemas import (
 log = logging.getLogger(__name__)
 INFORMATIONAL = {"info", "none"}
 
+
+def names(alerts: list[Alert]) -> str:
+    """``CephOSDDown x3, CephPGDegraded``: the alertnames of a batch, for log lines."""
+    counts: dict[str, int] = {}
+    for a in alerts:
+        counts[a.alertname] = counts.get(a.alertname, 0) + 1
+    return ", ".join(f"{n} x{c}" if c > 1 else n for n, c in sorted(counts.items()))
+
 SYSTEM_PROMPT = """You are the triage role of an SRE incident mesh.
 You receive a batch of firing alerts from ONE cluster that do not yet belong to any open incident.
 Decide, for every alert, exactly one of:
@@ -98,7 +106,14 @@ class Triage(Role):
             st = TriageState.model_validate(r.value)
             self.open[st.cluster] = {i.id: i for i in st.incidents}
             self.ignored[st.cluster] = set(st.ignored)
-        log.info("restored state: %s", {k: len(v) for k, v in self.open.items()})
+        if self.open:
+            for cluster, incs in self.open.items():
+                log.info("restored cluster %s: %d open incidents, %d fingerprints judged noise",
+                         cluster, len(incs), len(self.ignored.get(cluster, ())))
+        else:
+            log.info("no triage state yet: no open incidents")
+        log.info("model=%s, a batch goes to the model at %d alerts or after %.0fs, model timeout %.0fs",
+                 self.ts.model, self.ts.batch_size, self.ts.batch_seconds, self.ts.llm_timeout)
 
     def candidates(self, cluster: str, group_key: str) -> list[Incident]:
         """Open incidents in this cluster that already hold this alert's group."""
@@ -112,6 +127,7 @@ class Triage(Role):
         the batch is full or old."""
         rule_attached: dict[str, dict[str, list[Alert]]] = {}  # cluster -> incident id -> alerts
         rule_ignored: dict[str, list[Alert]] = {}
+        received: dict[str, list[Alert]] = {}
         for r in records:
             try:
                 t = Alert.model_validate(r.value)
@@ -120,6 +136,7 @@ class Triage(Role):
                 continue
             if t.status != "firing":
                 continue
+            received.setdefault(t.cluster, []).append(t)
             if t.fingerprint in self.ignored.get(t.cluster, set()):
                 rule_ignored.setdefault(t.cluster, []).append(t)
                 continue
@@ -128,7 +145,10 @@ class Triage(Role):
                 rule_attached.setdefault(t.cluster, {}).setdefault(cands[0].id, []).append(t)
             else:
                 self.pending.setdefault(t.cluster, []).append(t)
+        for cluster, alerts in received.items():
+            log.info("received %d firing alerts from cluster %s: %s", len(alerts), cluster, names(alerts))
         for cluster, alerts in rule_ignored.items():
+            log.info("ignored %d alerts by rule, re-sent and already judged noise: %s", len(alerts), names(alerts))
             await self.event(f"triage-{cluster}", "alerts.ignored",
                              {"how": "rule", "alerts": [a.id for a in alerts], "reason": "re-send of an alert already judged noise"})
         for cluster, by_inc in rule_attached.items():
@@ -139,7 +159,11 @@ class Triage(Role):
             self.opened_at = self.bus.now()
             return bool(rule_attached or rule_ignored)
         n = sum(len(v) for v in self.pending.values())
-        if n < self.ts.batch_size and self.bus.now() - self.opened_at < self.ts.batch_seconds:
+        waited = self.bus.now() - self.opened_at
+        if n < self.ts.batch_size and waited < self.ts.batch_seconds:
+            if received:
+                log.info("holding %d alerts for the model: batch closes at %d alerts or in %.0fs",
+                         n, self.ts.batch_size, self.ts.batch_seconds - waited)
             return False
         for cluster, alerts in self.pending.items():
             await self.handle_batch(cluster, alerts)
@@ -170,12 +194,15 @@ class Triage(Role):
             f"cluster: {cluster}\n\n## Candidate incidents\n{json.dumps(summary, ensure_ascii=False)}\n\n"
             f"## Quoted data: alerts in this batch\n{json.dumps(quoted, ensure_ascii=False)}"
         )
+        log.info("asking %s to triage %d alerts from cluster %s (%d candidate incidents to attach to)",
+                 self.ts.model, len(alerts), cluster, len(summary))
+        # No sampling parameters: Gemini 3 warns that temperature/top_p are deprecated, and the output
+        # is guarded by validate() and the rule-based fallback rather than by determinism.
         resp = await asyncio.wait_for(
             litellm.acompletion(
                 model=self.ts.model,
                 messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}],
                 response_format={"type": "json_object"},
-                temperature=0,
             ),
             timeout=self.ts.llm_timeout,
         )
@@ -245,12 +272,16 @@ class Triage(Role):
                 await self.event(root_id, "incident.opened", {"how": how, "title": d.title,
                                                                "priority": d.priority, "reason": d.reason,
                                                                "alerts": d.alerts})
+                log.info("opened %s [%s] %r by %s: %d alerts (%s) -> %s. Reason: %s", root_id, d.priority,
+                         d.title, how, len(picked), names(picked), self.topics.incidents(d.priority), d.reason)
             elif isinstance(d, Attach):
                 await self.attach(cluster, d.incident, [by_id[i] for i in d.alerts], how=how, reason=d.reason)
             elif isinstance(d, Ignore):
-                self.ignored.setdefault(cluster, set()).update(by_id[i].fingerprint for i in d.alerts)
+                picked = [by_id[i] for i in d.alerts]
+                self.ignored.setdefault(cluster, set()).update(a.fingerprint for a in picked)
                 await self.event(f"triage-{cluster}", "alerts.ignored", {"how": how, "alerts": d.alerts,
                                                                           "reason": d.reason})
+                log.info("ignored %d alerts by %s (%s). Reason: %s", len(picked), how, names(picked), d.reason)
         await self.snapshot(cluster)
 
     async def attach(self, cluster: str, incident_id: str, alerts: list[Alert], how: str, reason: str) -> None:
@@ -262,6 +293,8 @@ class Triage(Role):
         inc.alert_ids.extend(a.id for a in new)
         inc.alertnames = sorted(set(inc.alertnames) | {a.alertname for a in new})
         await self.event(incident_id, "alerts.attached", {"how": how, "alerts": [a.id for a in new], "reason": reason})
+        log.info("attached %d alerts (%s) to %s %r by %s, now %d alerts. Reason: %s", len(new), names(new),
+                 incident_id, inc.title, how, len(inc.alert_ids), reason)
 
     async def snapshot(self, cluster: str) -> None:
         await self.bus.produce(self.topics.triage_state, cluster,
@@ -277,5 +310,9 @@ class Triage(Role):
             log.warning("triage fallback for %s (%d alerts): %s: %s", cluster, len(alerts), type(e).__name__, e)
             out, how = self.fallback(cluster, alerts), "fallback"
         await self.apply(cluster, alerts, out, how)
-        log.info("batch cluster=%s alerts=%d via=%s decisions=%s in %.1fs", cluster, len(alerts), how,
-                 [d.action for d in out.decisions], time.monotonic() - t0)
+        opened = [d for d in out.decisions if isinstance(d, Open)]
+        attached = sum(len(d.alerts) for d in out.decisions if isinstance(d, Attach))
+        ignored = sum(len(d.alerts) for d in out.decisions if isinstance(d, Ignore))
+        log.info("batch done for cluster %s: %d alerts via %s in %.1fs: %d new incidents (%d alerts), "
+                 "%d alerts attached, %d ignored", cluster, len(alerts), how, time.monotonic() - t0,
+                 len(opened), sum(len(d.alerts) for d in opened), attached, ignored)
