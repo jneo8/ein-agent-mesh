@@ -51,8 +51,9 @@ async def serve(bus: MessageBus, topics: Topics, host: str, port: int) -> None:
     grouping = GroupingSettings()
 
     async def webhook(request: web.Request) -> web.Response:
+        """One Alertmanager payload in; one Alert per new alert out, grouped per cluster for the log."""
         payload = await request.json()
-        sent: dict[str, list[Alert]] = {}  # cluster -> produced
+        sent: dict[str, list[Alert]] = {}
         duplicates = 0
         for alert in payload.get("alerts", []):
             t = to_alert(alert, payload.get("groupKey"), payload.get("groupLabels"), grouping)

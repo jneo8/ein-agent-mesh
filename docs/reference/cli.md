@@ -13,12 +13,12 @@ command has a `just` recipe that loads `.env` first. Settings: [settings](settin
 | `kafka-reset *args` | `ein-mesh reset` |
 | `kafka-topics *args` | `ein-mesh topics` |
 | `kafka-roles` | `ein-mesh roles` |
-| `triage`, `orchestrator` | the role |
+| `triage`, `orchestrator`, `investigator` | the role |
 | `gateway *args`, `tail *topics` | the integrator |
 | `gateway-fire cluster='dev'` | `curl` the recorded storm at `http://127.0.0.1:8088/alertmanager` with `startsAt` set to now |
-| `lint`, `fmt`, `unit-test *args` | `ruff check`, `ruff format`, `pytest tests/unit` |
-| `eval *args`, `eval-llm *args`, `eval-test *args` | `python -m tests.eval`, the same with `--llm --show`, `pytest tests/eval` |
-| `gates` | `lint`, `unit-test`, `eval-test`, `eval` |
+| `lint`, `fmt`, `test *args` | `ruff check`, `ruff format`, `pytest tests/unit tests/eval` (unit tests and harness self-tests; no broker, no model) |
+| `eval *args`, `eval-llm *args` | `python -m tests.eval` (scripted model, prints the score table), the same with `--llm --show` |
+| `gates` | `lint`, `test`, `eval` |
 
 Recipe names carry their group as prefix (`deploy-`, `kafka-`, `gateway-`); roles and integrators
 keep their process name.
@@ -95,13 +95,32 @@ Role, group `ein-orchestrator`.
 
 | | |
 | --- | --- |
-| Reads | `incidents.critical`, `incidents.normal`; `incidents.state` at startup |
-| Writes | `incidents.state` |
-| Memory | per `root_id`: `IncidentState` |
-| Done when | the incident has an `investigating` record |
-| On failure | broker error → nothing commits, poll replayed; known `root_id` skipped |
+| Reads | `incidents.critical`, `incidents.normal`, `incidents.reports`; `incidents.state` at startup |
+| Writes | `incidents.tasks`, `incidents.state` |
+| Memory | per `root_id`: `IncidentState` with its tasks and `context` |
+| Done when | a new incident has an `investigating` record and one task issued; a report has settled its task and `context` is rewritten |
+| On failure | task `failed` or past its deadline → re-issued with `parent_id` while attempts remain, then `exhausted`; broker error → nothing commits, poll replayed; known `root_id` and already-done tasks skipped |
 
-Tasks, reports and the model turn arrive with the work layer.
+Loop: poll → incidents: new `root_id` → write state, issue one `investigator` task → reports: settle
+the task (`done` is final; a late report overrides `expired` / `failed`) → rewrite `context` → every
+poll, including empty ones: expire tasks past their deadline and decide on retries → commit.
+Settings: [orchestrator](settings.md#orchestrator). No model turn yet.
+
+## `investigator`
+
+Role, group `ein-investigator`.
+
+| | |
+| --- | --- |
+| Reads | `incidents.tasks` |
+| Writes | `incidents.reports` |
+| Memory | none |
+| Done when | one report per task, produced before the offset commits |
+| On failure | depth over the limit → `failed`; deadline passed → `expired`, no model call; model timeout / error / bad JSON → `failed` with the error |
+
+One task at a time; `max_poll_interval_ms` is the task timeout plus 60 s. A task for another `role`
+is skipped. No tools yet: one model call over the task body. Settings:
+[investigator](settings.md#investigator).
 
 ## `tail [TOPIC...] [--from-start]`
 

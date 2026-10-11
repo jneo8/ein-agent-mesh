@@ -10,11 +10,12 @@ from pathlib import Path
 from ein_mesh.bus import InMemoryBus, Record
 
 from .harness import Run
-from .score import latest_alerts_state
+from .score import latest_alerts_state, latest_incidents_state
 
 
 def _short_names(run: Run) -> dict[str, str]:
-    """id -> 'CephOSDDown{osd=osd.3}'. Labels are added only when needed to disambiguate."""
+    """id -> 'CephOSDDown{osd=osd.3}'. Labels are added only when needed to disambiguate; the same alert
+    in several waves gets a ``@w<n>`` suffix."""
     alerts = run.scenario.alerts
     by_name: dict[str, list] = {}
     for a in alerts:
@@ -27,7 +28,7 @@ def _short_names(run: Run) -> dict[str, str]:
         for a in group:
             label = name + ("{" + ",".join(f"{k}={a.labels.get(k)}" for k in keys) + "}" if keys else "")
             same = [b for b in group if all(b.labels.get(k) == a.labels.get(k) for k in keys)]
-            if len(same) > 1:  # the same alert in several waves
+            if len(same) > 1:
                 label += f"@w{run.scenario.wave_of[a.id]}"
             out[a.id] = label
     return out
@@ -67,10 +68,18 @@ def _triage_section(run: Run, names: dict[str, str]) -> list[str]:
 
 
 def _orchestrator_section(run: Run) -> list[str]:
-    t = run.topics
-    lines = ["[orchestrator] incidents.state:"]
-    for s in run.bus.values(t.incidents_state):
+    lines = ["[orchestrator] incidents.state (latest per incident):"]
+    for s in latest_incidents_state(run).values():
+        tasks = ", ".join(f"{x['role']}#{x['attempt']} {x['status']}" for x in s["tasks"]) or "no tasks"
         lines.append(f"  {s['root_id']}  {s['status']:14} [{s['priority']}] {s['title']}")
+        lines.append(f"             tasks: {tasks}; context {len(s['context'].encode())} bytes")
+    return lines
+
+
+def _investigator_section(run: Run) -> list[str]:
+    lines = ["[investigator] incidents.reports:"]
+    for r in run.bus.values(run.topics.reports):
+        lines.append(f"  {r['root_id']}  {r['task_id']}  {r['status']:8} {(r['summary'] or r['error'])[:90]}")
     return lines
 
 
@@ -84,6 +93,8 @@ def report(run: Run) -> str:
         lines += _triage_section(run, names) + [""]
     if run.ran("orchestrator"):
         lines += _orchestrator_section(run) + [""]
+    if run.ran("investigator"):
+        lines += _investigator_section(run) + [""]
     return "\n".join(lines).rstrip()
 
 

@@ -1,9 +1,10 @@
 """Load a scenario and run it through the mesh on an InMemoryBus, one stage at a time.
 
 Stages, in order: ``gateway`` (payload -> alert records), ``triage`` (alerts -> incidents and
-``alerts.state``), ``orchestrator`` (incidents -> ``incidents.state``). Each stage reads only what the
-previous one left on the bus, so a run can stop after any stage (``until``) or start at a later one from a
-saved dump (``start_at`` + a pre-loaded bus) to debug that stage alone.
+``alerts.state``), ``orchestrator`` (incidents -> ``incidents.state`` and one task each), ``investigator``
+(tasks -> reports, scripted from the quoted alerts, then the orchestrator again to fold them in). Each stage
+reads only what the previous one left on the bus, so a run can stop after any stage (``until``) or start at
+a later one from a saved dump (``start_at`` + a pre-loaded bus) to debug that stage alone.
 
 A scenario's ``alerts.json`` is one Alertmanager payload, or ``{"waves": [payload, ...]}`` for alerts that
 keep arriving: the gateway and triage stages then run once per wave, with a fresh ``Triage`` each time
@@ -19,13 +20,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ein_mesh.bus import InMemoryBus
-from ein_mesh.config import Topics, TriageSettings
+from ein_mesh.config import InvestigatorSettings, Topics, TriageSettings
 from ein_mesh.integrators import to_alert
-from ein_mesh.roles import Orchestrator, Triage
+from ein_mesh.roles import Investigator, Orchestrator, Triage
+from ein_mesh.roles import investigator as investigator_mod
 from ein_mesh.roles import triage as triage_mod
 
 SCENARIOS = Path(__file__).resolve().parent / "scenarios"
-STAGES = ("gateway", "triage", "orchestrator")
+STAGES = ("gateway", "triage", "orchestrator", "investigator")
 
 Matcher = dict[str, str]
 
@@ -41,13 +43,16 @@ def matches(matcher: Matcher, labels: dict[str, str], wave: int) -> bool:
 
 @dataclass
 class Scenario:
+    """One scenario directory loaded: ``waves`` holds one Alertmanager payload per wave, ``alerts`` the
+    Alert records of every wave in arrival order, ``wave_of`` maps alert id to its 1-based wave."""
+
     name: str
     path: Path
-    waves: list[dict]  # one Alertmanager payload per wave
+    waves: list[dict]
     expected: dict
     model: dict | None
-    alerts: list = field(default_factory=list)  # Alert records, all waves, in arrival order
-    wave_of: dict[str, int] = field(default_factory=dict)  # alert id -> 1-based wave
+    alerts: list = field(default_factory=list)
+    wave_of: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> Scenario:
@@ -122,14 +127,27 @@ def scripted_completion(run: Run):
     return acompletion
 
 
+async def scripted_investigation(model, messages, **kw):
+    """A litellm.acompletion stand-in for the investigator: findings built from the task's quoted alerts, so
+    the plumbing (task -> report -> context) is exercised without a model."""
+    quoted = json.loads(messages[1]["content"].split("## Quoted data\n", 1)[1])
+    alerts = quoted.get("alerts", [])
+    names = sorted({a["alertname"] for a in alerts})
+    body = {"summary": f"scripted: {len(alerts)} alerts ({', '.join(names)}); cause to be confirmed with tools",
+            "notes": [f"{n} firing - evidence: quoted alert" for n in names],
+            "identifiers": [f"{a['id']} - alert instance" for a in alerts], "resources_checked": ["quoted alerts"]}
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(body)))])
+
+
 @dataclass
 class Usage:
-    """Token usage summed over every LLM call of a run. Zero for the scripted model."""
+    """Token usage summed over every LLM call of a run. Zero for the scripted model; ``cost_usd`` is
+    None when litellm cannot price the model."""
 
     calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    cost_usd: float | None = None  # None when litellm cannot price the model
+    cost_usd: float | None = None
 
     def add(self, response) -> None:
         self.calls += 1
@@ -151,11 +169,13 @@ class Usage:
 
 @dataclass
 class Run:
+    """One scenario run: its bus, topics, usage and the stages executed, in order."""
+
     scenario: Scenario
     bus: InMemoryBus
     topics: Topics
     usage: Usage
-    stages: list[str] = field(default_factory=list)  # stages executed in this run, in order
+    stages: list[str] = field(default_factory=list)
 
     @property
     def llm_calls(self) -> int:
@@ -197,22 +217,39 @@ async def stage_orchestrator(run: Run) -> None:
     await Orchestrator(run.bus, run.topics).run_until_idle()
 
 
+async def stage_investigator(run: Run, llm: bool) -> None:
+    """One Investigator over whatever tasks are unread, then the orchestrator once more to fold the reports in."""
+    inner = investigator_mod.litellm.acompletion if llm else scripted_investigation
+
+    async def counting(*a, **kw):
+        response = await inner(*a, **kw)
+        run.usage.add(response)
+        return response
+
+    with patch.object(investigator_mod.litellm, "acompletion", counting):
+        await Investigator(run.bus, run.topics, InvestigatorSettings(timeout=120)).run_until_idle()
+    await stage_orchestrator(run)
+
+
 async def run_scenario(scenario: Scenario, llm: bool = False, ts: TriageSettings | None = None, *,
-                       until: str = "orchestrator", start_at: str = "gateway", bus: InMemoryBus | None = None) -> Run:
+                       until: str = STAGES[-1], start_at: str = "gateway", bus: InMemoryBus | None = None) -> Run:
     """Run the stages from ``start_at`` to ``until`` inclusive. ``bus`` seeds the run (a loaded dump) when
-    starting after the gateway; without it, a later ``start_at`` has nothing to read and is an error."""
+    starting after the gateway; without it, a later ``start_at`` has nothing to read and is an error.
+    When the run includes both gateway and triage, alerts keep arriving: each wave is ingested and
+    classified in turn, with the orchestrator (and investigator) after every wave."""
     if start_at != "gateway" and bus is None:
         raise ValueError(f"start_at={start_at!r} needs a pre-loaded bus (see report.load_dump)")
     run = Run(scenario, bus or InMemoryBus(), Topics(prefix="eval."), Usage())
     ts = ts or TriageSettings(model=TriageSettings().model if llm else "scripted", batch_size=50, batch_seconds=30)
     span = _span(start_at, until)
     if "gateway" in span and "triage" in span:
-        # alerts keep arriving: ingest and classify wave by wave, orchestrator after each wave
         for n in range(1, len(scenario.waves) + 1):
             await stage_gateway(run, n)
             await stage_triage(run, llm, ts)
             if "orchestrator" in span:
                 await stage_orchestrator(run)
+            if "investigator" in span:
+                await stage_investigator(run, llm)
         run.stages.extend(span)
         return run
     for stage in span:
@@ -222,6 +259,8 @@ async def run_scenario(scenario: Scenario, llm: bool = False, ts: TriageSettings
             await stage_triage(run, llm, ts)
         elif stage == "orchestrator":
             await stage_orchestrator(run)
+        elif stage == "investigator":
+            await stage_investigator(run, llm)
         run.stages.append(stage)
     return run
 

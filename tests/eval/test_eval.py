@@ -28,26 +28,30 @@ def _answer(out):
 async def test_scripted_model_is_clean_at_every_stage(scenario):
     s = score(await run_scenario(scenario))
     assert s.violations == []
-    assert s.gateway.ok() and s.triage.ok() and s.orchestrator.ok()
+    assert s.gateway.ok() and s.triage.ok() and s.orchestrator.ok() and s.investigator.ok()
     assert s.perfect, s
-    assert 1 <= s.llm_calls <= len(scenario.waves), "at most one LLM call per wave; a wave of pure re-sends needs none"
-    assert s.orchestrator.metrics["investigating"] == s.triage.metrics["produced_groups"]
+    groups = s.triage.metrics["produced_groups"]
+    assert groups <= s.llm_calls <= len(scenario.waves) + groups, \
+        "triage: at most one call per wave (a wave of pure re-sends needs none); investigator: one call per incident"
+    assert s.orchestrator.metrics["investigating"] == groups
+    assert s.investigator.metrics["reports_done"] == s.orchestrator.metrics["tasks_done"] == groups
 
 
 async def test_waves_attach_through_a_restarted_triage():
     """Three waves, three fresh Triage instances: later waves attach to incidents restored from alerts.state,
-    the orchestrator sees each incident once, and the state snapshot ends with every alert placed."""
+    the orchestrator sees each incident once, and the state ends with every alert placed. A wave may write
+    the state more than once (rule attaches and re-sent noise in one poll, then the model's batch)."""
     [scenario] = scenarios(["rolling-ceph-storm"])
     run = await run_scenario(scenario)
     s = score(run)
     assert s.violations == [] and s.perfect, s
-    assert s.llm_calls == 2, "wave 1 (ceph), wave 2 (new temporal group); wave 3 is all rule attaches"
+    assert s.llm_calls == 2 + 2, "triage: wave 1 (ceph), wave 2 (new temporal group), wave 3 all rule attaches; investigator: one per incident"
     snapshots = run.bus.values(run.topics.alerts_state)
-    assert len(snapshots) == 3, "one state snapshot per wave for the single cluster"
+    assert len(snapshots) >= 3 and all(sn["cluster"] == "dev" for sn in snapshots), "at least one write per wave"
     final = snapshots[-1]["incidents"]
     attachments = [a for i in final for a in i["attached"]]
     assert len(final) == 2 and len(attachments) >= 3 and all(a["how"] == "rule" for a in attachments)
-    assert len(run.bus.values(run.topics.incidents_state)) == 2, "orchestrator ran after every wave but skipped replays"
+    assert len({s["root_id"] for s in run.bus.values(run.topics.incidents_state)}) == 2, "orchestrator skipped replays"
     assert sum(len(i["alert_ids"]) for i in final) == 9
 
 
@@ -84,6 +88,8 @@ async def test_splits_only_cost_recall():
 
 
 async def test_dead_model_shows_as_fallback():
+    """With the triage model down, every incident is opened by the rule fallback and the score says so. The
+    fallback may well be perfect on a label-clean storm; what must not happen is a silent pass as `llm`."""
     [scenario] = scenarios(["ceph-osd-storm"])
 
     async def broken(model, messages, **kw):
@@ -92,7 +98,8 @@ async def test_dead_model_shows_as_fallback():
     with patch("tests.eval.harness.scripted_completion", lambda run: broken):
         s = score(await run_scenario(scenario))
     assert s.violations == []
-    assert s.fallback_opens >= 1 and not s.ok()
+    assert s.fallback_opens == s.triage.metrics["produced_groups"] >= 1, "every incident came from the fallback"
+    assert s.investigator.ok(), "the investigator does not depend on triage's model"
 
 
 async def test_until_stops_after_a_stage():
@@ -116,7 +123,7 @@ async def test_orchestrator_can_be_replayed_from_a_dump(tmp_path):
     dump(first, tmp_path)
 
     seeded = load_dump(tmp_path, scenario.name)
-    second = await run_scenario(scenario, start_at="orchestrator", bus=seeded)
+    second = await run_scenario(scenario, start_at="orchestrator", until="orchestrator", bus=seeded)
     assert second.stages == ["orchestrator"] and second.llm_calls == 0
     s = score(second)
     assert s.gateway.skipped and s.triage.skipped and s.orchestrator.ok()

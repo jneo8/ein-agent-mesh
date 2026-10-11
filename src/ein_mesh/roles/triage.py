@@ -83,14 +83,15 @@ class Triage(Role):
     name: ClassVar[str] = "triage"
 
     def __init__(self, bus: MessageBus, topics: Topics, ts: TriageSettings) -> None:
+        """Memory per cluster: ``open`` maps incident id to incident, ``ignored`` maps fingerprint to why
+        it is noise, ``pending`` holds alerts not yet classified; ``opened_at`` is when the current batch
+        started waiting."""
         super().__init__(bus, topics)
         self.ts = ts
-        self.open: dict[str, dict[str, Incident]] = {}  # cluster -> incident id -> incident
-        self.ignored: dict[str, dict[str, Ignored]] = {}  # cluster -> fingerprint -> why it is noise
-        self.pending: dict[str, list[Alert]] = {}  # cluster -> alerts not yet classified
+        self.open: dict[str, dict[str, Incident]] = {}
+        self.ignored: dict[str, dict[str, Ignored]] = {}
+        self.pending: dict[str, list[Alert]] = {}
         self.opened_at = bus.now()
-
-    # ---------- Role contract ----------
 
     @property
     def inputs(self) -> list[str]:
@@ -128,9 +129,9 @@ class Triage(Role):
 
     async def handle(self, records: list[Record]) -> bool:
         """Re-sends of alerts already judged noise are ignored by rule; an alert whose group has exactly
-        one open incident attaches by rule; the rest is buffered per cluster and flushed to the model when
-        the batch is full or old."""
-        rule_attached: dict[str, dict[str, list[Alert]]] = {}  # cluster -> incident id -> alerts
+        one open incident attaches by rule (collected per cluster and incident); the rest is buffered per
+        cluster and flushed to the model when the batch is full or old."""
+        rule_attached: dict[str, dict[str, list[Alert]]] = {}
         rule_ignored: dict[str, list[Alert]] = {}
         received: dict[str, list[Alert]] = {}
         for r in records:
@@ -176,8 +177,6 @@ class Triage(Role):
         self.opened_at = self.bus.now()
         return True
 
-    # ---------- classification ----------
-
     def candidate_incidents(self, cluster: str, alerts: list[Alert]) -> dict[str, Incident]:
         """Open incidents the model may attach to: those sharing a group with an alert in the batch. A
         group with exactly one open incident never reaches the model, so these are the ambiguous ones."""
@@ -185,6 +184,9 @@ class Triage(Role):
         return {i.id: i for i in self.open.get(cluster, {}).values() if i.group_key in groups}
 
     async def classify(self, cluster: str, alerts: list[Alert]) -> TriageOutput:
+        """One model call over the batch and its candidate incidents. No sampling parameters: Gemini 3
+        deprecates temperature / top_p, and the output is guarded by ``validate`` and the rule-based
+        fallback rather than by determinism."""
         summary = [
             {"id": i.id, "title": i.title, "priority": i.priority, "namespace": i.namespace,
              "alertnames": i.alertnames[:8]}
@@ -201,8 +203,6 @@ class Triage(Role):
         )
         log.info("asking %s to triage %d alerts from cluster %s (%d candidate incidents to attach to)",
                  self.ts.model, len(alerts), cluster, len(summary))
-        # No sampling parameters: Gemini 3 warns that temperature/top_p are deprecated, and the output
-        # is guarded by validate() and the rule-based fallback rather than by determinism.
         resp = await asyncio.wait_for(
             litellm.acompletion(
                 model=self.ts.model,
@@ -255,9 +255,9 @@ class Triage(Role):
                                       reason="fallback: no usable triage output"))
         return TriageOutput(decisions=decisions)
 
-    # ---------- apply ----------
-
     async def apply(self, cluster: str, alerts: list[Alert], out: TriageOutput, how: How) -> None:
+        """Carry out the decisions: open incidents (a message plus a table entry), attach, ignore; then
+        write the cluster's state once."""
         by_id = {a.id: a for a in alerts}
         open_ = self.open.setdefault(cluster, {})
         for d in out.decisions:

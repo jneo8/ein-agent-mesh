@@ -50,7 +50,8 @@ One terminal each:
 just gateway        # :8088
 just triage
 just orchestrator
-just tail           # everything; or: just tail incidents.critical incidents.state
+just investigator
+just tail           # everything; or: just tail incidents.tasks incidents.reports incidents.state
 ```
 
 Order does not matter; a role that starts late reads what it missed.
@@ -62,14 +63,16 @@ just gateway-fire                 # the recorded Ceph storm, cluster=dev
 just gateway-fire cluster=staging # another cluster: everything is new again
 ```
 
-Expected, in about 30 seconds: triage logs one model call and three new incidents, the orchestrator
-logs three investigations. A second replay of the same storm attaches by rule and makes no model call.
+Expected, in about a minute: triage logs one model call and three new incidents; the orchestrator
+issues one task each; the investigator reports three times; the orchestrator logs `report received`
+and `incidents.state` shows each task `done` with a filled `context`. A second replay of the same
+storm attaches by rule and makes no triage call.
 
 ## 6. Watch
 
 ```bash
 just kafka-topics --watch 5    # records per topic
-just kafka-roles               # consumer groups, members, lag
+just kafka-roles               # consumer groups (ein-triage, ein-orchestrator, ein-investigator), members, lag
 ```
 
 ## 7. Start over

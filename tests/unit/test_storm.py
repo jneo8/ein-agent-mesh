@@ -7,19 +7,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from ein_mesh.config import TriageSettings
+from ein_mesh.config import InvestigatorSettings, TriageSettings
 from ein_mesh.integrators import to_alert
-from ein_mesh.roles import Orchestrator, Triage
+from ein_mesh.roles import Investigator, Orchestrator, Triage
+from ein_mesh.roles import investigator as investigator_mod
 from ein_mesh.roles import triage as triage_mod
 
 from .conftest import storm_payload
 
 pytestmark = pytest.mark.asyncio
 
-# What a well-behaved triage says about this storm under the under-merge policy: Ceph and temporal stay
-# separate (no label ties them), TargetDown is its own normal incident, noise is ignored.
 def model_answer(prompt_user: str) -> str:
-    """Decisions for whatever subset of the storm is in this batch; empty groups are left out."""
+    """What a well-behaved triage says about this storm under the under-merge policy: Ceph and temporal
+    stay separate (no label ties them), TargetDown is its own normal incident, noise is ignored.
+    Decisions cover whatever subset of the storm is in this batch; empty groups are left out."""
     batch = json.loads(prompt_user.split("## Quoted data: alerts in this batch\n", 1)[1])
     by_name: dict[str, list[str]] = {}
     for a in batch:
@@ -74,12 +75,42 @@ async def test_storm_through_gateway_mapping_triage_and_orchestrator(bus, topics
     await Orchestrator(bus, topics).run_until_idle()
     states = {s["root_id"]: s["status"] for s in bus.values(topics.incidents_state)}
     assert states == {c["root_id"]: "investigating" for c in critical + normal}
+    assert {t["root_id"] for t in bus.values(topics.tasks)} == set(states), "one task per incident"
+
+
+async def test_storm_tasks_are_investigated_and_folded_into_context(bus, topics, fake_llm, monkeypatch):
+    """triage -> orchestrator -> investigator (model mocked) -> orchestrator: every incident ends with one done
+    task and a context that holds the investigator's summary."""
+    for alert in storm_payload()["alerts"]:
+        t = to_alert(alert)
+        await bus.produce(topics.alerts, t.cluster, t)
+    await Triage(bus, topics, TriageSettings(model="fake", batch_size=50, batch_seconds=30)).run_until_idle()
+    await Orchestrator(bus, topics).run_until_idle()
+
+    async def acompletion(model, messages, **kw):
+        quoted = json.loads(messages[1]["content"].split("## Quoted data\n", 1)[1])
+        names = sorted({a["alertname"] for a in quoted["alerts"]})
+        body = {"summary": f"probable cause behind {', '.join(names)}", "notes": [f"{n} firing - evidence: alert" for n in names],
+                "identifiers": [a["id"] for a in quoted["alerts"]], "resources_checked": ["quoted alerts"]}
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(body)))])
+
+    monkeypatch.setattr(investigator_mod.litellm, "acompletion", acompletion)
+    await Investigator(bus, topics, InvestigatorSettings(model="fake", timeout=5)).run_until_idle()
+    reports = bus.values(topics.reports)
+    assert len(reports) == 3 and all(r["status"] == "done" for r in reports)
+
+    await Orchestrator(bus, topics).run_until_idle()
+    latest = {s["root_id"]: s for s in bus.values(topics.incidents_state)}
+    for st in latest.values():
+        assert [t["status"] for t in st["tasks"]] == ["done"]
+        assert "probable cause behind" in st["context"] and "Open tasks:" not in st["context"]
 
 
 async def test_second_wave_attaches_by_rule_after_a_restart(bus, topics, monkeypatch):
     """Replay the same storm after triage already opened incidents, with a fresh Triage that restores from
     alerts.state: re-sent incident alerts attach by rule (their group has exactly one open incident), re-sent
-    noise is ignored by rule (fingerprint remembered in the state), and the model is not called at all."""
+    noise is ignored by rule (fingerprint remembered in the state), and the model is not called at all.
+    Wave 2 changes only ``startsAt``, so the alerts are new instances with the same fingerprints."""
     calls = []
 
     async def acompletion(model, messages, **kw):
@@ -97,10 +128,10 @@ async def test_second_wave_attaches_by_rule_after_a_restart(bus, topics, monkeyp
 
     wave2 = storm_payload()
     for alert in wave2["alerts"]:
-        alert["startsAt"] = "2026-10-10T00:05:00+00:00"  # new instances, same fingerprints
+        alert["startsAt"] = "2026-10-10T00:05:00+00:00"
         t = to_alert(alert)
         await bus.produce(topics.alerts, t.cluster, t)
-    await Triage(bus, topics, ts).run_until_idle()  # a fresh process: restores from alerts.state
+    await Triage(bus, topics, ts).run_until_idle()
 
     assert len(calls) == 1, "wave 2 needs no model call: attach and ignore both happen by rule"
     st = bus.values(topics.alerts_state)[-1]

@@ -11,7 +11,7 @@ flowchart LR
   T <-->|memory| AS[(alerts.state)]
   T --> I[(incidents.critical / .normal)] --> O[orchestrator]
   O <-->|memory| IS[(incidents.state)]
-  O --> TK[(incidents.tasks)] --> INV[investigator · next]
+  O --> TK[(incidents.tasks)] --> INV[investigator]
   INV --> R[(incidents.reports)] --> O
 ```
 
@@ -37,7 +37,7 @@ flowchart LR
 
 ## Status
 
-- Implemented: gateway, triage, the orchestrator's first transition (`open → investigating`), the
-  topic model, evals.
-- Next: tasks and reports with an investigator role, then read-only tools, then the orchestrator's
-  own model turn, then the chat frontend.
+- Implemented: gateway, triage, orchestrator (owns the incident, issues tasks, folds reports into
+  its memory, retries), investigator (one model call per task, no tools), the topic model, evals.
+- Next: read-only tools for the investigator, then the orchestrator's own model turn, then `closed`
+  and the chat frontend.

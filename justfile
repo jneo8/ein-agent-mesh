@@ -10,8 +10,8 @@ help:
     @just --list --unsorted
 
 [group('gates')]
-[doc('Everything required before handing work back: lint, unit tests, harness tests, scripted evals.')]
-gates: lint unit-test eval-test eval
+[doc('Everything required before handing work back: lint, tests, scripted evals.')]
+gates: lint test eval
     @echo 'All gates passed.'
 
 [group('gates')]
@@ -25,14 +25,9 @@ fmt:
     uv run --directory {{ root }} ruff format src tests
 
 [group('gates')]
-[doc('Unit tests: InMemoryBus, no broker, no LLM.')]
-unit-test *args:
-    uv run --directory {{ root }} --group test pytest tests/unit {{ args }}
-
-[group('gates')]
-[doc('Harness self-tests in tests/eval: scripted model perfect, lumping/splitting/dead models scored as intended.')]
-eval-test *args:
-    uv run --directory {{ root }} --group test pytest tests/eval {{ args }}
+[doc('Every test that costs nothing: unit tests on the InMemoryBus and the eval harness self-tests. No broker, no LLM.')]
+test *args:
+    uv run --directory {{ root }} --group test pytest tests/unit tests/eval {{ args }}
 
 [group('gates')]
 [doc('Scenario evals, staged gateway → triage → orchestrator, scripted model; must be clean. Args: scenario names, --show, --until STAGE, --start-at STAGE --from-dump DIR, --dump DIR, --threshold.')]
@@ -93,9 +88,14 @@ triage:
     uv run --directory {{ root }} ein-mesh triage
 
 [group('roles')]
-[doc('Orchestrator role: open → investigating.')]
+[doc('Orchestrator role: owns every incident; issues tasks, folds reports into context.')]
 orchestrator:
     uv run --directory {{ root }} ein-mesh orchestrator
+
+[group('roles')]
+[doc('Investigator role: one task at a time, a report per task.')]
+investigator:
+    uv run --directory {{ root }} ein-mesh investigator
 
 [group('integrators')]
 [doc('Gateway: Alertmanager webhook → alerts, on :8088.')]

@@ -39,7 +39,8 @@ identity, so it always travels together.
   reports into a bounded summary of what is known, decides what to do next, and is the only agent
   that talks to people.
 - **Investigator** does one task at a time: look, do not touch, report what you found with the
-  evidence. It has no memory and makes no decisions about the incident.
+  evidence. It has no memory and makes no decisions about the incident. Today it reasons over the
+  quoted alerts; read-only tools come next.
 - **Frontend** (later) relays questions to a chat thread and answers back. It translates; it never
   decides.
 

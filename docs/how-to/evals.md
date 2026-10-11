@@ -44,6 +44,6 @@ The dump holds every topic as JSON; the second run replays the orchestrator on i
 ## Keep the harness honest
 
 ```bash
-just eval-test        # harness self-tests: scripted perfect, lumping fails, splitting costs recall, dead model shows as fallback
-just gates            # lint, unit tests, harness tests, scripted evals
+just test             # unit tests plus the harness self-tests: scripted perfect, lumping fails, splitting costs recall, dead model shows as fallback
+just gates            # lint, test, scripted evals
 ```

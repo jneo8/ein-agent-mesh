@@ -49,6 +49,21 @@ A full name outside the prefix needs its own ACL.
 | `ALERTS_STATE_MAX_ATTACHMENTS` | `20` | attachments kept per incident |
 | `IGNORED_TTL_DAYS` | `7` | forget an ignored fingerprint unseen for this long |
 
+## Orchestrator
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TASK_DEADLINE_SECONDS` | `900` | a task not reported by then is `expired` |
+| `TASK_MAX_ATTEMPTS` | `2` | re-issues after `failed` / `expired` stop here; the task becomes `exhausted` |
+
+## Investigator
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `EIN_AGENT_MODEL` | `gemini/gemini-3.7-flash` | shared with triage |
+| `INVESTIGATOR_TIMEOUT` | `600` | seconds per task before it is reported `failed`; `max_poll_interval_ms` is this plus 60 s |
+| `INVESTIGATOR_MAX_DEPTH` | `3` | tasks deeper than this are refused |
+
 ## Terraform
 
 Inputs of `deploy/terraform` (`variables.tf`).

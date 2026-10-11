@@ -147,10 +147,31 @@ class GroupingSettings:
 
 @dataclass(frozen=True)
 class TriageSettings:
+    """Triage's batching, model timeout, and the two bounds on ``alerts.state``: that record is one per
+    cluster and rewritten whole on every change, so attachments per incident and the age of ignored
+    fingerprints are capped (``max_attachments``, ``ignored_ttl_days``)."""
+
     model: str = field(default_factory=lambda: _env("EIN_AGENT_MODEL", "gemini/gemini-3.7-flash"))
     batch_size: int = field(default_factory=lambda: int(_env("TRIAGE_BATCH_SIZE", "50")))
     batch_seconds: float = field(default_factory=lambda: float(_env("TRIAGE_BATCH_SECONDS", "30")))
     llm_timeout: float = field(default_factory=lambda: float(_env("TRIAGE_LLM_TIMEOUT", "120")))
-    # bounds on alerts.state: it is one record per cluster, rewritten whole on every change
     max_attachments: int = field(default_factory=lambda: int(_env("ALERTS_STATE_MAX_ATTACHMENTS", "20")))
     ignored_ttl_days: float = field(default_factory=lambda: float(_env("IGNORED_TTL_DAYS", "7")))
+
+
+@dataclass(frozen=True)
+class OrchestratorSettings:
+    """How long a task may take before it is expired, and how many attempts an incident gets."""
+
+    task_deadline_seconds: float = field(default_factory=lambda: float(_env("TASK_DEADLINE_SECONDS", "900")))
+    task_max_attempts: int = field(default_factory=lambda: int(_env("TASK_MAX_ATTEMPTS", "2")))
+
+
+@dataclass(frozen=True)
+class InvestigatorSettings:
+    """The investigator's model, per-task timeout (also sizes the consumer's poll interval) and the
+    delegation depth beyond which a task is refused."""
+
+    model: str = field(default_factory=lambda: _env("EIN_AGENT_MODEL", "gemini/gemini-3.7-flash"))
+    timeout: float = field(default_factory=lambda: float(_env("INVESTIGATOR_TIMEOUT", "600")))
+    max_depth: int = field(default_factory=lambda: int(_env("INVESTIGATOR_MAX_DEPTH", "3")))

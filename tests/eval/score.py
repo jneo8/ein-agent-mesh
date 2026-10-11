@@ -4,7 +4,9 @@
 - triage: grouping against the expected incidents under the under-merge policy (a false merge fails,
   a split only costs recall), ignore precision/recall, priority, and triage's own invariants. Decisions
   are read from the latest ``alerts.state`` per cluster, the role's memory.
-- orchestrator: every incident has an investigating ``incidents.state`` record, nothing extra.
+- orchestrator: every incident has an investigating ``incidents.state`` record and one task; after the
+  investigator stage, that task is done and the context holds its findings.
+- investigator: every issued task got exactly one done report.
 """
 
 from __future__ import annotations
@@ -17,10 +19,12 @@ from .harness import Run
 
 @dataclass
 class StageScore:
+    """One stage's metrics and violations; ``skipped`` when the stage was not part of this run."""
+
     stage: str
     metrics: dict = field(default_factory=dict)
     violations: list[str] = field(default_factory=list)
-    skipped: bool = False  # stage was not part of this run
+    skipped: bool = False
 
     def ok(self, threshold: float = 1.0) -> bool:
         if self.skipped:
@@ -44,7 +48,9 @@ class StageScore:
                     f"false_merge={m['false_merges']} splits={m['splits']} pair_r={m['pair_recall']} "
                     f"ign={m['ignore_precision']}/{m['ignore_recall']} prio={m['priority_hits']}/{m['exact_groups']} "
                     f"attached={m['attached']}/{m['expected_attached']} fallback={m['fallback_opens']}")
-        return f"{m['investigating']}/{m['incidents']} investigating"
+        if self.stage == "orchestrator":
+            return f"{m['investigating']}/{m['incidents']} investigating, {m['tasks_done']} tasks done"
+        return f"{m['reports_done']}/{m['tasks']} tasks reported done, {m['reports_failed']} failed"
 
 
 @dataclass
@@ -57,10 +63,11 @@ class Score:
     gateway: StageScore
     triage: StageScore
     orchestrator: StageScore
+    investigator: StageScore
 
     @property
     def stages(self) -> list[StageScore]:
-        return [self.gateway, self.triage, self.orchestrator]
+        return [self.gateway, self.triage, self.orchestrator, self.investigator]
 
     def ok(self, threshold: float = 1.0) -> bool:
         return all(st.ok(threshold) for st in self.stages)
@@ -74,9 +81,9 @@ class Score:
         t = self.triage.metrics
         return self.ok(1.0) and (self.triage.skipped or t["exact_groups"] == t["expected_groups"] == t["produced_groups"])
 
-    # convenience accessors used by the table and the tests
     def __getattr__(self, name):
-        for st in (self.triage, self.gateway, self.orchestrator):
+        """Convenience accessor for the table and the tests: any metric of any stage that ran."""
+        for st in (self.triage, self.gateway, self.orchestrator, self.investigator):
             if not st.skipped and name in st.metrics:
                 return st.metrics[name]
         raise AttributeError(name)
@@ -95,6 +102,14 @@ def latest_alerts_state(run: Run) -> dict[str, dict]:
     latest: dict[str, dict] = {}
     for s in run.bus.values(run.topics.alerts_state):
         latest[s["cluster"]] = s
+    return latest
+
+
+def latest_incidents_state(run: Run) -> dict[str, dict]:
+    """root_id -> the last incidents.state record for it: what the orchestrator would restore."""
+    latest: dict[str, dict] = {}
+    for s in run.bus.values(run.topics.incidents_state):
+        latest[s["root_id"]] = s
     return latest
 
 
@@ -149,7 +164,6 @@ def score_triage(run: Run) -> StageScore:
     inc_ids = {i["root_id"] for i in incidents}
     if set(final) != inc_ids:
         violations.append(f"alerts.state incidents {sorted(final)} != incidents {sorted(inc_ids)}")
-    # alerts the scenario says must have joined an existing incident rather than opened a new one
     exp_attached = set(sc.resolve_all(sc.expected.get("attached", [])))
     attached = {aid for i in state_incidents for a in i["attached"] for aid in a["alerts"]}
     not_attached = exp_attached - attached
@@ -171,22 +185,51 @@ def score_orchestrator(run: Run) -> StageScore:
         return StageScore("orchestrator", skipped=True)
     bus, t = run.bus, run.topics
     incidents = {i["root_id"]: i for i in bus.values(t.incidents("critical")) + bus.values(t.incidents("normal"))}
-    states = {s["root_id"]: s for s in bus.values(t.incidents_state)}  # last record per root_id wins
+    states = latest_incidents_state(run)
     investigating = {rid for rid, s in states.items() if s["status"] == "investigating"}
     violations = []
     if investigating != set(incidents):
         violations.append(f"investigating {sorted(investigating)} != incidents {sorted(incidents)}")
-    if len(bus.values(t.incidents_state)) != len(incidents):
-        violations.append(f"{len(bus.values(t.incidents_state))} state records for {len(incidents)} incidents: "
-                          "a replayed incident was not skipped")
+    tasks_done = 0
     for rid, st in states.items():
         inc = incidents.get(rid)
         if inc and (st["priority"], st["title"], st["cluster"]) != (inc["priority"], inc["title"], inc["cluster"]):
             violations.append(f"state {rid} disagrees with its incident on priority/title/cluster")
-    return StageScore("orchestrator", {"incidents": len(incidents), "investigating": len(investigating)}, violations)
+        if not st["tasks"]:
+            violations.append(f"{rid} has no task: the orchestrator issued nothing")
+        done = [x for x in st["tasks"] if x["status"] == "done"]
+        tasks_done += len(done)
+        if run.ran("investigator"):
+            if not done:
+                violations.append(f"{rid} has no done task after the investigator ran: {[x['status'] for x in st['tasks']]}")
+            if not st["context"]:
+                violations.append(f"{rid} has an empty context after a report")
+    return StageScore("orchestrator", {"incidents": len(incidents), "investigating": len(investigating),
+                                       "tasks_done": tasks_done}, violations)
+
+
+def score_investigator(run: Run) -> StageScore:
+    if not run.ran("investigator"):
+        return StageScore("investigator", skipped=True)
+    bus, t = run.bus, run.topics
+    issued = {x["task_id"] for st in latest_incidents_state(run).values() for x in st["tasks"]}
+    reports = bus.values(t.reports)
+    done = [r["task_id"] for r in reports if r["status"] == "done"]
+    violations = []
+    unknown = {r["task_id"] for r in reports} - issued
+    if unknown:
+        violations.append(f"reports for tasks nobody issued: {sorted(unknown)}")
+    if len(done) != len(set(done)):
+        violations.append("a task reported done more than once")
+    missing = issued - set(done)
+    if missing:
+        violations.append(f"{len(missing)} issued task(s) without a done report")
+    return StageScore("investigator", {"tasks": len(issued), "reports_done": len(done),
+                                       "reports_failed": sum(1 for r in reports if r["status"] != "done")}, violations)
 
 
 def score(run: Run) -> Score:
     return Score(scenario=run.scenario.name, llm_calls=run.llm_calls, prompt_tokens=run.usage.prompt_tokens,
                  completion_tokens=run.usage.completion_tokens, cost_usd=run.usage.cost_usd,
-                 gateway=score_gateway(run), triage=score_triage(run), orchestrator=score_orchestrator(run))
+                 gateway=score_gateway(run), triage=score_triage(run), orchestrator=score_orchestrator(run),
+                 investigator=score_investigator(run))

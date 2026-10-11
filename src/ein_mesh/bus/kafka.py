@@ -82,25 +82,29 @@ async def partition_counts(admin: AIOKafkaAdminClient, names: list[str]) -> dict
     return {name: found.get(name) for name in names}
 
 
-DYNAMIC_TOPIC_CONFIG = 1  # DescribeConfigs config_source: set on the topic itself, not a broker default
+DYNAMIC_TOPIC_CONFIG = 1
+"""DescribeConfigs ``config_source`` for a value set on the topic itself rather than a broker default."""
 TOPIC_ALREADY_EXISTS = 36
 UNKNOWN_TOPIC = 3
+"""Kafka error codes aiokafka reports per topic instead of raising."""
 
 
 async def topic_configs(admin: AIOKafkaAdminClient, names: list[str]) -> dict[str, dict[str, str]]:
     """The topic-level config actually set on each named topic (broker defaults excluded). Raises
     the Kafka error for a resource the broker refused, e.g. ``TopicAuthorizationFailedError`` when
-    the user lacks DescribeConfigs."""
+    the user lacks DescribeConfigs.
+
+    aiokafka hands back tuples: a resource is ``(error_code, error_message, resource_type,
+    resource_name, config_entries)``; an entry is ``(config_name, config_value, read_only,
+    is_default | config_source, is_sensitive, ...)`` depending on the protocol version."""
     out: dict[str, dict[str, str]] = {name: {} for name in names}
     responses = await admin.describe_configs([ConfigResource(ConfigResourceType.TOPIC, n) for n in names])
     for resp in responses:
         for resource in resp.resources:
-            # (error_code, error_message, resource_type, resource_name, config_entries)
             code, message, name, entries = resource[0], resource[1], resource[3], resource[4]
             if code:
                 raise for_code(code)(f"describe configs of {name}: {message}")
             for entry in entries:
-                # (config_name, config_value, read_only, is_default | config_source, is_sensitive, ...)
                 key, value, flag = entry[0], entry[1], entry[3]
                 dynamic = (not flag) if isinstance(flag, bool) else flag == DYNAMIC_TOPIC_CONFIG
                 if dynamic and value is not None:
@@ -111,7 +115,10 @@ async def topic_configs(admin: AIOKafkaAdminClient, names: list[str]) -> dict[st
 async def reconcile_topic_configs(admin: AIOKafkaAdminClient, topics: Topics, names: list[str]) -> list[str]:
     """Make each existing topic's config equal to ``topics.all()``: keys we want are set, keys we do
     not want fall back to broker defaults. Returns the topics that were changed. Partition counts are
-    not touched here; those cannot be reconciled, see ``verify_layout``."""
+    not touched here; those cannot be reconciled, see ``verify_layout``.
+
+    AlterConfigs replaces the whole topic-level config, which is exactly the intent. Its response
+    resources are ``(error_code, error_message, resource_type, resource_name)``."""
     try:
         current = await topic_configs(admin, names)
     except TopicAuthorizationFailedError as e:
@@ -126,10 +133,9 @@ async def reconcile_topic_configs(admin: AIOKafkaAdminClient, topics: Topics, na
         for key, (old, new) in drift.items():
             log.info("topic %s: %s %s -> %s", name, key, old if old is not None else "(default)",
                      new if new is not None else "(default)")
-        # AlterConfigs replaces the whole topic-level config, which is exactly the intent.
         responses = await admin.alter_configs([ConfigResource(ConfigResourceType.TOPIC, name, configs=topics.all()[name])])
         for resp in responses:
-            for resource in resp.resources:  # (error_code, error_message, resource_type, resource_name)
+            for resource in resp.resources:
                 if resource[0]:
                     raise for_code(resource[0])(f"alter configs of {resource[3]}: {resource[1]}")
         changed.append(name)
@@ -157,7 +163,9 @@ async def create_topics(settings: KafkaSettings, topics: Topics) -> tuple[list[s
     ``topics.replication`` replicas, bring existing topics' config (cleanup policy, retention) in
     line with the layout, then check the partition counts. Returns ``(created, updated)``. Safe to
     re-run. A topic with a different partition count makes init fail, because co-partitioning cannot
-    be repaired in place."""
+    be repaired in place.
+
+    aiokafka's CreateTopics returns per-topic error codes instead of raising, so they are read here."""
     admin = AIOKafkaAdminClient(**settings.client_kwargs())
     await admin.start()
     created: list[str] = []
@@ -168,7 +176,6 @@ async def create_topics(settings: KafkaSettings, topics: Topics) -> tuple[list[s
                 NewTopic(name, num_partitions=topics.partitions, replication_factor=topics.replication,
                          topic_configs=cfg)
             ])
-            # aiokafka returns per-topic error codes instead of raising; read them.
             for topic, code, message in resp.topic_errors:
                 if code == 0:
                     created.append(topic)
@@ -265,29 +272,33 @@ async def topic_status(settings: KafkaSettings, topics: Topics) -> list[dict]:
 async def consumer_groups(settings: KafkaSettings, prefix: str) -> list[dict]:
     """The roster: every consumer group whose id starts with ``prefix`` (the mesh's roles), with its
     state, members and per-topic lag. A group with no members is a role that stopped but whose
-    offsets have not expired yet. Groups the user may not Describe are simply not listed."""
+    offsets have not expired yet. Groups the user may not Describe are simply not listed.
+
+    Groups are described one per request to work around aiokafka 0.14: it sends DescribeGroups v3 but
+    decodes the reply with the v2 schema, which lacks the per-group ``authorized_operations`` field.
+    With a single group the extra bytes trail harmlessly; with two or more the second group decodes
+    misaligned and the connection dies with "Buffer underrun decoding string". The reply tuples are
+    ``(error_code, group, state, protocol_type, protocol, members, ...)`` and a member is
+    ``(member_id, client_id, client_host, metadata, assignment, ...)``. The group-less consumer only
+    serves end offsets."""
     admin = AIOKafkaAdminClient(**settings.client_kwargs())
     await admin.start()
-    c = consumer(settings, None)  # no subscription; only used for end offsets
+    c = consumer(settings, None)
     await c.start()
     out: list[dict] = []
     try:
         ids = sorted(g for g, _proto in await admin.list_consumer_groups() if g.startswith(prefix))
         if not ids:
             return out
-        # One group per request: aiokafka 0.14 sends DescribeGroups v3 but decodes the reply with the
-        # v2 schema, which lacks the per-group authorized_operations field. With a single group the
-        # extra bytes trail harmlessly; with two or more the second group decodes misaligned and the
-        # connection dies with "Buffer underrun decoding string".
         groups: dict[str, tuple] = {}
         for gid in ids:
             for resp in await admin.describe_consumer_groups([gid]):
-                for g in resp.groups:  # (error_code, group, state, protocol_type, protocol, members, ...)
+                for g in resp.groups:
                     groups[g[1]] = g
         for gid in ids:
             g = groups.get(gid)
             members = []
-            for m in (g[5] if g else []):  # (member_id, client_id, client_host, metadata, assignment, ...)
+            for m in (g[5] if g else []):
                 assigned: dict[str, list[int]] = {}
                 if m[4]:
                     for topic, parts in ConsumerProtocolMemberAssignment.decode(m[4]).assignment:
@@ -307,9 +318,11 @@ async def consumer_groups(settings: KafkaSettings, prefix: str) -> list[dict]:
 
 
 class KafkaBus(MessageBus):
+    """The bus over aiokafka. Both clients are created in ``start()``, not here: aiokafka requires a
+    running event loop when a producer or consumer is constructed."""
+
     def __init__(self, settings: KafkaSettings) -> None:
         self.settings = settings
-        # aiokafka clients must be created inside a running event loop, so both are built in start().
         self._producer: AIOKafkaProducer | None = None
         self._consumer: AIOKafkaConsumer | None = None
         self._sub: tuple[str | None, tuple[str, ...], dict] | None = None

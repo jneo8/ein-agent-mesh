@@ -45,12 +45,13 @@ def test_layout_is_two_kinds_of_topic():
 
 
 def test_config_drift_compares_against_the_layout():
+    """Drift is a value that differs, a wanted key that is missing, or a key set on the broker that the
+    layout does not want."""
     t = Topics(prefix="t.")
     compact = {"cleanup.policy": "compact"}
     assert t.config_drift(t.alerts_state, compact) == {}
     assert t.config_drift(t.alerts, {}) == {}
 
-    # value differs, key missing, key set on the broker that the layout does not want
     assert t.config_drift(t.alerts_state, {"cleanup.policy": "delete"}) == {"cleanup.policy": ("delete", "compact")}
     assert t.config_drift(t.alerts_state, {}) == {"cleanup.policy": (None, "compact")}
     assert t.config_drift(t.alerts, {"retention.ms": "1000"}) == {"retention.ms": ("1000", None)}

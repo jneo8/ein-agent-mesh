@@ -54,6 +54,6 @@ class InMemoryBus(MessageBus):
     def pending(self) -> bool:
         return any(self.cursor.get(t, 0) < len(self.topics.get(t, [])) for t in self.subscribed)
 
-    # -- test helpers --
     def values(self, topic: str) -> list[dict]:
+        """Test helper: every value ever produced to ``topic``, in order."""
         return [r.value for r in self.topics.get(topic, [])]

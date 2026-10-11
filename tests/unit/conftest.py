@@ -28,8 +28,10 @@ def storm_payload() -> dict:
 
 def make_alert(alert_id: str, cluster: str = "dev", ns: str = "ceph", name: str = "CephOSDDown",
                severity: str = "critical", status: str = "firing") -> Alert:
+    """An Alert as the gateway would build it: ``id`` is ``fingerprint:startsAt`` (``<alert_id>:t0`` unless
+    given in full), ``group_key`` derived from the default GROUP_BY labels."""
     labels = {"alertname": name, "severity": severity, "namespace": ns, "cluster": cluster}
     group_key, group_labels = derive_group(labels, GroupingSettings().group_by)
-    alert_id = alert_id if ":" in alert_id else f"{alert_id}:t0"  # fingerprint:startsAt like the gateway
+    alert_id = alert_id if ":" in alert_id else f"{alert_id}:t0"
     return Alert(id=alert_id, cluster=cluster, namespace=ns, alertname=name, severity=severity, status=status,
                  labels=labels, group_key=group_key, group_labels=group_labels)

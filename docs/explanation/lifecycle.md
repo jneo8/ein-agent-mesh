@@ -51,6 +51,8 @@ stateDiagram-v2
 
 ## Built so far
 
-- `detected → open` and `open → investigating`.
-- Everything after `investigating` is designed, not built: tasks and reports come next, then the
-  frontend with questions and answers.
+- `detected → open`, `open → investigating`, and the loop inside `investigating`: one task per
+  incident, a report back, retries with a pointer to the failed attempt, findings folded into the
+  incident's memory.
+- Not built: the investigator's tools, the orchestrator's own model turn, `waiting` and `closed`
+  with the frontend's questions and answers.

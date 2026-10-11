@@ -33,7 +33,7 @@ def _flag(st, threshold) -> str:
 
 def table(scores: list[Score], threshold: float) -> str:
     cols = ["scenario", "gw", "llm", "tok_in", "tok_out", "cost", "groups", "exact", "false_merge", "splits",
-            "pair_r", "ign_p", "ign_r", "prio", "fallback", "orch", "ok"]
+            "pair_r", "ign_p", "ign_r", "prio", "fallback", "orch", "inv", "ok"]
     rows = []
     for s in scores:
         t = s.triage.metrics if not s.triage.skipped else {}
@@ -43,7 +43,7 @@ def table(scores: list[Score], threshold: float) -> str:
                      f"{g('produced_groups')}/{g('expected_groups')}" if t else "", g("exact_groups"), g("false_merges"),
                      g("splits"), g("pair_recall"), g("ignore_precision"), g("ignore_recall"),
                      f"{g('priority_hits')}/{g('exact_groups')}" if t else "", g("fallback_opens"),
-                     _flag(s.orchestrator, threshold), "yes" if s.ok(threshold) else "NO"])
+                     _flag(s.orchestrator, threshold), _flag(s.investigator, threshold), "yes" if s.ok(threshold) else "NO"])
     ts = [s.triage.metrics for s in scores if not s.triage.skipped]
     costs = [s.cost_usd for s in scores if s.cost_usd is not None]
     total = ["TOTAL", f"{sum(s.gateway.ok(threshold) for s in scores)}/{len(scores)}",
@@ -54,6 +54,7 @@ def table(scores: list[Score], threshold: float) -> str:
              "", "", "", f"{sum(m['priority_hits'] for m in ts)}/{sum(m['exact_groups'] for m in ts)}" if ts else "",
              sum(m["fallback_opens"] for m in ts),
              f"{sum(s.orchestrator.ok(threshold) for s in scores)}/{len(scores)}",
+             f"{sum(s.investigator.ok(threshold) for s in scores)}/{len(scores)}",
              f"{sum(s.ok(threshold) for s in scores)}/{len(scores)}"]
     rows.append(total)
     widths = [max(len(str(x)) for x in col) for col in zip(cols, *rows)]
@@ -83,7 +84,7 @@ async def main(argv: list[str] | None = None) -> int:
     p.add_argument("scenario", nargs="*", help="scenario directory names; default all")
     p.add_argument("--llm", action="store_true", help="use the real model (EIN_AGENT_MODEL) instead of model.json")
     p.add_argument("--threshold", type=float, default=1.0, help="minimum triage pair recall; false merges always fail")
-    p.add_argument("--until", choices=STAGES, default="orchestrator", help="stop after this stage")
+    p.add_argument("--until", choices=STAGES, default=STAGES[-1], help="stop after this stage")
     p.add_argument("--start-at", choices=STAGES, default="gateway", help="begin at this stage (needs --from-dump)")
     p.add_argument("--from-dump", type=Path, metavar="DIR", help="seed the bus from a --dump directory")
     p.add_argument("--show", action="store_true", help="print what each stage produced")

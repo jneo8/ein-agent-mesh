@@ -1,5 +1,5 @@
 """ein-mesh CLI: init topics, inspect topics and the roles consuming them, run a role (triage,
-orchestrator) or an integrator (gateway, tail)."""
+orchestrator, investigator) or an integrator (gateway, tail)."""
 
 from __future__ import annotations
 
@@ -11,14 +11,16 @@ import click
 from aiokafka.errors import TopicAuthorizationFailedError
 
 from ein_mesh.bus import KafkaBus, consumer_groups, create_topics, reset_topics, topic_status
-from ein_mesh.config import KafkaSettings, Topics, TriageSettings
+from ein_mesh.config import InvestigatorSettings, KafkaSettings, OrchestratorSettings, Topics, TriageSettings
 
 
 @click.group()
 def cli() -> None:
+    """Shared logging setup. aiokafka and the aiohttp access log are quieted: the gateway logs each
+    webhook itself, in words."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("aiokafka").setLevel(logging.WARNING)
-    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)  # the gateway logs each webhook itself
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 
 def _quiet_litellm() -> None:
@@ -54,14 +56,16 @@ def reset(yes: bool, prune: bool) -> None:
     """Development only: delete every mesh topic and create it again, empty. Every alert, incident
     and state snapshot is lost and every role's committed offsets go with the topics. Refuses while
     a role is connected; stop triage, orchestrator, gateway and tail first. --prune also removes
-    topics left over from an earlier topic model."""
+    topics left over from an earlier topic model.
+
+    The authorization error is caught before RuntimeError because aiokafka's errors subclass it."""
     ks, tp = KafkaSettings(), Topics()
     if not yes:
         what = f"Delete all records in {list(tp.all())}" + (" and every other topic under the prefix" if prune else "")
         click.confirm(f"{what} on {ks.bootstrap}?", abort=True)
     try:
         deleted, created = asyncio.run(reset_topics(ks, tp, prune=prune))
-    except TopicAuthorizationFailedError as e:  # before RuntimeError: aiokafka errors subclass it
+    except TopicAuthorizationFailedError as e:
         raise click.ClickException(
             f"{e}. This user may not DELETE topics. The Terraform module grants it through "
             "entity-permissions, which the Kafka charm applies only when the integration is created: "
@@ -133,11 +137,21 @@ def triage() -> None:
 
 @cli.command()
 def orchestrator() -> None:
-    """Orchestrator role: open -> investigating (PoC slice)."""
+    """Orchestrator role: owns every incident; issues tasks, folds reports into the incident's context."""
     from ein_mesh.roles import Orchestrator
 
     bus, topics = _env()
-    asyncio.run(Orchestrator(bus, topics).run())
+    asyncio.run(Orchestrator(bus, topics, OrchestratorSettings()).run())
+
+
+@cli.command()
+def investigator() -> None:
+    """Investigator role: one task at a time, a report per task."""
+    from ein_mesh.roles import Investigator
+
+    _quiet_litellm()
+    bus, topics = _env()
+    asyncio.run(Investigator(bus, topics, InvestigatorSettings()).run())
 
 
 @cli.command()

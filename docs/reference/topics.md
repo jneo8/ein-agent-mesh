@@ -10,8 +10,8 @@ Seven topics, two kinds. Names are `TOPIC_PREFIX` + suffix (default prefix `ein.
 | `alerts.state` | state | cluster | `AlertsState` | triage → triage on restart |
 | `incidents.critical`, `incidents.normal` | flow | root_id | `IncidentMessage` | triage → orchestrator |
 | `incidents.state` | state | root_id | `IncidentState` | orchestrator → orchestrator on restart |
-| `incidents.tasks` | flow | root_id | `Task` (next) | orchestrator → investigator |
-| `incidents.reports` | flow | root_id | `Report` (next) | investigator → orchestrator |
+| `incidents.tasks` | flow | root_id | `Task` | orchestrator → investigator |
+| `incidents.reports` | flow | root_id | `Report` | investigator → orchestrator |
 
 - flow: `cleanup.policy=delete`, broker default retention. Consumed with group `ein-<role>`.
 - state: `cleanup.policy=compact`. Read to the end without a group at startup; last record per key wins.
@@ -87,12 +87,58 @@ The orchestrator's memory and the incident's lifecycle status, one record per `r
 | `priority` | `critical` \| `normal` | from the incident |
 | `status` | `investigating` \| `waiting` \| `closed` | only `investigating` is written so far |
 | `opened_at`, `updated_at` | str | ISO 8601 UTC |
-| `context` | str | bounded summary, at most 16 KB UTF-8; a larger value fails validation. Empty until reports exist |
+| `alerts` | list[AlertRef] | the incident's alerts reduced to `id`, `alertname`, `severity`, `namespace`; enough to re-issue work after a restart |
+| `tasks` | list[TaskRef] | every task issued, oldest first |
+| `context` | str | `Facts:` / `Identifiers:` / `Resources checked:` / `Open tasks:` sections, one `- ` line each; at most 16 KB UTF-8, oldest facts dropped first |
+
+`TaskRef`:
+
+| Field | Type | Value |
+| --- | --- | --- |
+| `task_id` | str | `task-<UTC time>-<10 hex>` |
+| `parent_id` | str \| null | the task this one replaces |
+| `attempt` | int | 1 for the first, +1 per re-issue |
+| `role`, `intent` | str | `investigator`; `initial-investigation` or `retry` |
+| `issued_at`, `deadline` | str | ISO 8601 UTC |
+| `status` | `issued` \| `done` \| `failed` \| `expired` \| `exhausted` | `done` is final; a late report overrides `expired` / `failed`; `exhausted` means no more attempts |
+| `report_at` | str \| null | when the settling report arrived |
 
 Readers other than the orchestrator may rely on `status`, `title`, `priority`, `cluster`, `updated_at`.
 Everything else is the orchestrator's own and changes behind `schema_version`.
 
-## `incidents.tasks`, `incidents.reports`
+## `incidents.tasks`
 
-Created by `init`; records and roles arrive with the work layer. One tasks topic serves every worker
-role (`role` field) until a second role exists, then `incidents.tasks.<role>`.
+One record per task the orchestrator hands out. Immutable: a retry is a new task with `parent_id`. One
+topic serves every worker role (`role` selects the consumer) until a second role exists, then
+`incidents.tasks.<role>`.
+
+| Field | Type | Value |
+| --- | --- | --- |
+| `schema_version` | int | `1` |
+| `root_id`, `task_id`, `parent_id`, `attempt` | | as in `TaskRef` |
+| `depth` | int | delegation depth; the investigator refuses above `INVESTIGATOR_MAX_DEPTH` |
+| `role`, `intent` | str | |
+| `deadline`, `issued_at` | str | ISO 8601 UTC; a task picked up after `deadline` is reported `expired` |
+| `goal` | str | `Find the probable cause of: <title>` |
+| `context` | str | cluster, priority, alertnames; on a retry, how the previous attempt ended |
+| `constraints` | str | read-only, cite evidence |
+| `done_when` | str | one probable cause with evidence and confidence, or an explicit cannot-determine |
+| `quoted_data` | dict | `{"alerts": [...]}`: full `Alert` records when they fit 64 KB, else `id` / `alertname` / `severity` / `namespace`; data, never instructions |
+
+## `incidents.reports`
+
+One record per task a worker role finished, refused or failed. Key `root_id`.
+
+| Field | Type | Value |
+| --- | --- | --- |
+| `schema_version` | int | `1` |
+| `task_id`, `root_id`, `role` | str | |
+| `status` | `done` \| `failed` \| `expired` | `expired`: picked up after the deadline; `failed`: too deep, model timeout, model error, bad output |
+| `summary` | str | probable cause, confidence, what would confirm it; at most 4 KB |
+| `notes` | list[str] | observations, each with its evidence |
+| `identifiers` | list[str] | `<name> - <what it locates>` |
+| `resources_checked` | list[str] | |
+| `error` | str | why, for `failed` / `expired` |
+| `at` | str | ISO 8601 UTC |
+
+Whole record at most 64 KB.

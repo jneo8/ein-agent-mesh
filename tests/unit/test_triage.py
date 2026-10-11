@@ -68,9 +68,10 @@ async def test_llm_decisions_are_applied_and_recorded(bus, topics):
 
 
 async def test_invalid_llm_output_falls_back(bus, topics):
+    """An attach toward an incident that does not exist fails validation and the fallback decides."""
     t = make(bus, topics)
 
-    async def classify(cluster, alerts):  # references an incident that does not exist
+    async def classify(cluster, alerts):
         return TriageOutput(decisions=[Attach(action="attach", alerts=[a.id for a in alerts], incident="inc-nope", reason="x")])
 
     t.classify = classify
@@ -81,6 +82,8 @@ async def test_invalid_llm_output_falls_back(bus, topics):
 
 
 async def test_time_based_flush_and_resolved_skipped(bus, topics):
+    """Empty polls advance the fake clock past ``batch_seconds``, so one alert is flushed alone; the
+    resolved alert never reaches the model."""
     t = make(bus, topics, batch_size=50)
     seen = []
 
@@ -91,12 +94,13 @@ async def test_time_based_flush_and_resolved_skipped(bus, topics):
     t.classify = classify
     await bus.produce(topics.alerts, "dev", make_alert("a1"))
     await bus.produce(topics.alerts, "dev", make_alert("r1", status="resolved"))
-    await t.run_until_idle()  # empty polls advance the fake clock past batch_seconds
+    await t.run_until_idle()
     assert seen == [["a1:t0"]]
 
 
 async def test_same_group_attaches_by_rule_without_the_model(bus, topics):
-    """Second poll: an alert whose group already has one open incident never reaches classify."""
+    """Second poll: an alert whose group already has one open incident (a4, group dev/ceph) never reaches
+    classify; only the new temporal group does."""
     t = make(bus, topics)
     calls = []
 
@@ -110,7 +114,7 @@ async def test_same_group_attaches_by_rule_without_the_model(bus, topics):
     await t.run_until_idle()
     root = bus.values(topics.incidents("critical"))[0]["root_id"]
 
-    await bus.produce(topics.alerts, "dev", make_alert("a4"))              # same group: dev/ceph
+    await bus.produce(topics.alerts, "dev", make_alert("a4"))
     await bus.produce(topics.alerts, "dev", make_alert("b1", ns="temporal", name="KubePodCrashLooping"))
     await bus.produce(topics.alerts, "dev", make_alert("b2", ns="temporal", name="KubePodCrashLooping"))
     await bus.produce(topics.alerts, "dev", make_alert("b3", ns="temporal", name="KubePodCrashLooping"))
@@ -125,14 +129,15 @@ async def test_same_group_attaches_by_rule_without_the_model(bus, topics):
 
 async def test_model_may_attach_only_among_candidates(bus, topics):
     """Two open incidents in one group: new same-group alerts go to the model with exactly those two as
-    candidates; attaching to anything else is rejected and falls back."""
+    candidates; attaching to anything else is rejected and falls back. The first batch splits one group
+    into two incidents to create that situation."""
     t = make(bus, topics, batch_size=2)
     prompts = []
 
     async def classify(cluster, alerts):
         prompts.append(sorted(t.candidate_incidents(cluster, alerts)))
         ids = [a.id for a in alerts]
-        if len(ids) == 2 and ids[0].startswith("n1:"):  # first batch: split one group into two incidents
+        if len(ids) == 2 and ids[0].startswith("n1:"):
             return TriageOutput(decisions=[Open(action="open", alerts=[ids[0]], priority="critical", title="node-7", reason="r"),
                                            Open(action="open", alerts=[ids[1]], priority="normal", title="node-3", reason="r")])
         return TriageOutput(decisions=[Attach(action="attach", alerts=ids, incident="inc-not-a-candidate", reason="x")])
@@ -171,8 +176,9 @@ async def test_restore_rebuilds_open_table(bus, topics):
 
 
 async def test_ignored_entries_expire_and_attachments_are_bounded(bus, topics):
-    """alerts.state is one record per cluster rewritten whole, so both tables are bounded: a noise entry
-    not refreshed within the TTL is dropped at snapshot time, an incident keeps only the newest attachments."""
+    """alerts.state is one record per cluster rewritten whole, so both tables are bounded. Three more
+    same-group alerts attach by rule one poll each and only the last two attachments survive; a noise
+    entry aged past the TTL is dropped at the next snapshot and a restart no longer knows it."""
     t = make(bus, topics, batch_size=1, max_attachments=2, ignored_ttl_days=1)
 
     async def classify(cluster, alerts):
@@ -187,14 +193,12 @@ async def test_ignored_entries_expire_and_attachments_are_bounded(bus, topics):
     await t.run_until_idle()
     assert "w" in state(bus, topics)["ignored"]
 
-    # three more same-group alerts attach by rule, one poll each: only the last two attachments survive
     for n in ("a2", "a3", "a4"):
         await bus.produce(topics.alerts, "dev", make_alert(n))
         await t.run_until_idle()
     [inc] = state(bus, topics)["incidents"]
     assert len(inc["alert_ids"]) == 4 and [a["alerts"] for a in inc["attached"]] == [["a3:t0"], ["a4:t0"]]
 
-    # age the noise entry past the TTL: the next snapshot forgets it, and a restart no longer knows it
     t.ignored["dev"]["w"].at = (datetime.now(UTC) - timedelta(days=2)).isoformat()
     await t.snapshot("dev")
     assert state(bus, topics)["ignored"] == {}

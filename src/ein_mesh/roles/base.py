@@ -25,8 +25,6 @@ class Role(ABC):
     def __init__(self, bus: MessageBus, topics: Topics) -> None:
         self.bus, self.topics = bus, topics
 
-    # -- what a role declares --
-
     @property
     @abstractmethod
     def inputs(self) -> list[str]:
@@ -46,9 +44,9 @@ class Role(ABC):
         """Process one poll (possibly empty). Return True when offsets may be committed, i.e. every
         record received so far has had its outputs produced."""
 
-    # -- the loop --
-
     async def run(self) -> None:
+        """The production loop: subscribe, start, verify the topic layout, restore, then poll / handle /
+        commit forever."""
         self.bus.subscribe(self.name, *self.inputs, **self.consumer_options())
         await self.bus.start()
         try:
