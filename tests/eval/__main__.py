@@ -42,7 +42,7 @@ def table(scores: list[Score], threshold: float) -> str:
                      _cost(s.cost_usd),
                      f"{g('produced_groups')}/{g('expected_groups')}" if t else "", g("exact_groups"), g("false_merges"),
                      g("splits"), g("pair_recall"), g("ignore_precision"), g("ignore_recall"),
-                     f"{g('priority_hits')}/{g('exact_groups')}" if t else "", g("fallback_batches"),
+                     f"{g('priority_hits')}/{g('exact_groups')}" if t else "", g("fallback_opens"),
                      _flag(s.orchestrator, threshold), "yes" if s.ok(threshold) else "NO"])
     ts = [s.triage.metrics for s in scores if not s.triage.skipped]
     costs = [s.cost_usd for s in scores if s.cost_usd is not None]
@@ -52,7 +52,7 @@ def table(scores: list[Score], threshold: float) -> str:
              f"{sum(m['produced_groups'] for m in ts)}/{sum(m['expected_groups'] for m in ts)}" if ts else "",
              sum(m["exact_groups"] for m in ts), sum(m["false_merges"] for m in ts), sum(m["splits"] for m in ts),
              "", "", "", f"{sum(m['priority_hits'] for m in ts)}/{sum(m['exact_groups'] for m in ts)}" if ts else "",
-             sum(m["fallback_batches"] for m in ts),
+             sum(m["fallback_opens"] for m in ts),
              f"{sum(s.orchestrator.ok(threshold) for s in scores)}/{len(scores)}",
              f"{sum(s.ok(threshold) for s in scores)}/{len(scores)}"]
     rows.append(total)

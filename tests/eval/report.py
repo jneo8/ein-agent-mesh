@@ -10,6 +10,7 @@ from pathlib import Path
 from ein_mesh.bus import InMemoryBus, Record
 
 from .harness import Run
+from .score import latest_alerts_state
 
 
 def _short_names(run: Run) -> dict[str, str]:
@@ -41,7 +42,7 @@ def _gateway_section(run: Run, names: dict[str, str]) -> list[str]:
 
 
 def _triage_section(run: Run, names: dict[str, str]) -> list[str]:
-    sc, bus, t = run.scenario, run.bus, run.topics
+    sc = run.scenario
     fmt = lambda ids: ", ".join(sorted(names.get(i, i) for i in ids))  # noqa: E731
     lines = ["[triage] expected:"]
     for g in sc.expected["incidents"]:
@@ -50,30 +51,26 @@ def _triage_section(run: Run, names: dict[str, str]) -> list[str]:
         lines.append(f"  [ignore  ] {fmt(sc.resolve_all(sc.expected['ignored']))}")
     if sc.expected.get("attached"):
         lines.append(f"  [attach  ] {fmt(sc.resolve_all(sc.expected['attached']))}")
-    lines += ["[triage] produced:"]
-    final = {i["id"]: i for s in bus.values(t.triage_state) for i in s["incidents"]}
-    reasons = {e["root_id"]: e["body"].get("reason", "") for e in bus.values(t.events) if e["kind"] == "incident.opened"}
-    for inc in final.values():
-        lines.append(f"  [{inc['priority']:8}] {fmt(inc['alert_ids'])}   ({inc['id']})")
-        lines.append(f"             title:  {inc['title']}")
-        if reasons.get(inc["id"]):
-            lines.append(f"             reason: {reasons[inc['id']]}")
-    for e in bus.values(t.events):
-        if e["kind"] == "alerts.ignored":
-            lines.append(f"  [ignore  ] {fmt(e['body']['alerts'])}")
-            lines.append(f"             reason: {e['body'].get('reason', '')}")
-        elif e["kind"] in ("alerts.attached", "incident.merged"):
-            lines.append(f"  [{e['kind']}] {json.dumps(e['body'], ensure_ascii=False)}")
+    lines += ["[triage] produced (latest alerts.state per cluster):"]
+    for snap in latest_alerts_state(run).values():
+        for inc in snap["incidents"]:
+            lines.append(f"  [{inc['priority']:8}] {fmt(inc['alert_ids'])}   ({inc['id']}, by {inc['how']})")
+            lines.append(f"             title:  {inc['title']}")
+            if inc.get("reason"):
+                lines.append(f"             reason: {inc['reason']}")
+            for a in inc["attached"]:
+                lines.append(f"             attached by {a['how']}: {fmt(a['alerts'])}  ({a['reason']})")
+        for entry in snap["ignored"].values():
+            lines.append(f"  [ignore  ] {fmt(entry['alerts'])}   (by {entry['how']})")
+            lines.append(f"             reason: {entry['reason']}")
     return lines
 
 
 def _orchestrator_section(run: Run) -> list[str]:
     t = run.topics
-    lines = ["[orchestrator] investigation.state:"]
-    for s in run.bus.values(t.investigation_state):
+    lines = ["[orchestrator] incidents.state:"]
+    for s in run.bus.values(t.incidents_state):
         lines.append(f"  {s['root_id']}  {s['status']:14} [{s['priority']}] {s['title']}")
-    kinds = [e["kind"] for e in run.bus.values(t.events) if e.get("role") == "orchestrator"]
-    lines.append(f"[orchestrator] events: {dict((k, kinds.count(k)) for k in sorted(set(kinds)))}")
     return lines
 
 

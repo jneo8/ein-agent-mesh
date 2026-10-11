@@ -10,12 +10,15 @@ suffixes; the full name is `TOPIC_PREFIX` + suffix unless overridden.
 
 ## Role × topic matrix
 
-| | `alerts` | `triage.state` | `incidents.critical` / `.normal` | `investigation.events` | `investigation.state` |
-| --- | --- | --- | --- | --- | --- |
-| `gateway` | **write** | | | | |
-| `triage` | read, group `ein-triage` | read at start, **write** per batch | **write** on `open` | **write** per decision | |
-| `orchestrator` | | | read, group `ein-orchestrator` | **write** `investigation.started` | read at start, **write** per transition |
-| `tail` | read, no group | read, no group | read, no group | read, no group | read, no group |
+Flow topics carry one message from one role to the next; a state topic is one role's memory (see
+[two kinds of topic](topics.md#two-kinds-of-topic)).
+
+| | `alerts` | `alerts.state` | `incidents.critical` / `.normal` | `incidents.state` | `incidents.tasks` | `incidents.reports` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `gateway` | **write** | | | | | |
+| `triage` | read, group `ein-triage` | read at start, **write** per change | **write** on `open` | | | |
+| `orchestrator` | | | read, group `ein-orchestrator` | read at start, **write** per transition | (work layer) | (work layer) |
+| `tail` | read, no group | read, no group | read, no group | read, no group | read, no group | read, no group |
 
 ## The `Role` base class
 
@@ -24,14 +27,13 @@ loop; a subclass supplies only its decision logic.
 
 | Member | Kind | Description |
 | --- | --- | --- |
-| `name` | class attribute | Role name. Consumer group is `${KAFKA_GROUP_PREFIX}<name>`; also the `role` field on every event it writes. |
+| `name` | class attribute | Role name. Consumer group is `${KAFKA_GROUP_PREFIX}<name>`. |
 | `inputs` | abstract property | Topics to consume. |
 | `restore()` | coroutine, optional | Rebuild in-memory state from compacted topics via `bus.read_to_end`. Default: nothing. |
 | `handle(records)` | abstract coroutine | Process one poll, possibly empty. Return `True` when every record received so far has had its outputs produced; the loop then commits. |
 | `idle()` | method, optional | `True` when nothing is buffered inside the role. Batching roles override it. Used by `run_until_idle`. |
 | `consumer_options()` | method, optional | Extra consumer settings, e.g. `max_poll_interval_ms`. |
 | `poll_max_records()` | method, optional | Cap per poll. |
-| `event(root_id, kind, body)` | helper | Write an `Event` with `role=name` to `investigation.events`. |
 | `run()` | loop | `subscribe` → `start` → `restore` → poll / `handle` / `commit` forever. |
 | `run_until_idle()` | test loop | Same, but returns once the bus has no unread records and `idle()` is true. |
 
@@ -68,7 +70,7 @@ that imports aiokafka), `memory.py` (`InMemoryBus`).
 bus, topics = InMemoryBus(), Topics(prefix="t.")
 await bus.produce(topics.incidents("critical"), "inc-1", incident)
 await Orchestrator(bus, topics).run_until_idle()
-assert bus.values(topics.investigation_state)[0]["status"] == "investigating"
+assert bus.values(topics.incidents_state)[0]["status"] == "investigating"
 ```
 
 `just unit-test` runs `tests/unit`: no broker, no LLM. Two levels of mocking: most tests replace
@@ -81,9 +83,9 @@ assert bus.values(topics.investigation_state)[0]["status"] == "investigating"
 
 | File | Content |
 | --- | --- |
-| `alerts.json` | Alertmanager webhook payload, the recorded input; or `{"waves": [payload, ...]}` when alerts keep arriving. Each wave is ingested and triaged by a fresh `Triage` (restoring from `triage.state`, like a restart), with the orchestrator run after every wave. |
+| `alerts.json` | Alertmanager webhook payload, the recorded input; or `{"waves": [payload, ...]}` when alerts keep arriving. Each wave is ingested and triaged by a fresh `Triage` (restoring from `alerts.state`, like a restart), with the orchestrator run after every wave. |
 | `expected.json` | `incidents`: list of `{priority, alerts: [matcher]}`; `ignored`: list of matchers; optional `attached`: matchers for alerts that must have joined an existing incident rather than opened one. A matcher is a dict of labels that must select exactly one alert; `"_wave": n` picks one wave's instance of a repeated alert. |
-| `model.json` | The scripted model: triage decisions with matchers instead of ids, resolved per batch at run time. An `attach` names its target as `"incident": <matcher>`, the open incident that already holds that alert, looked up in `triage.state`. |
+| `model.json` | The scripted model: triage decisions with matchers instead of ids, resolved per batch at run time. An `attach` names its target as `"incident": <matcher>`, the open incident that already holds that alert, looked up in `alerts.state`. |
 
 The harness runs three stages on one `InMemoryBus`, each reading only what the previous stage left:
 
@@ -91,7 +93,7 @@ The harness runs three stages on one `InMemoryBus`, each reading only what the p
 | --- | --- | --- |
 | `gateway` | `to_alert` on every payload alert, produced to `alerts` | one record per alert, unique ids, no `unknown` cluster |
 | `triage` | `Triage.run_until_idle` with `litellm.acompletion` patched to the scripted model (`--llm` keeps the real one) | grouping, ignore, priority, triage invariants (table below) |
-| `orchestrator` | `Orchestrator.run_until_idle` | every incident has an `investigating` state and one `investigation.started` event, state agrees with its incident, nothing extra |
+| `orchestrator` | `Orchestrator.run_until_idle` | every incident has one `investigating` record on `incidents.state` that agrees with it, nothing extra |
 
 Stage control, so one stage can be debugged alone:
 
@@ -100,7 +102,7 @@ Stage control, so one stage can be debugged alone:
 | `--until STAGE` | stop after that stage; later stages show `skip`. |
 | `--dump DIR` | write every bus topic as `DIR/<scenario>/<topic>.json` after the run. |
 | `--start-at STAGE --from-dump DIR` | seed the bus from a dump and run from that stage on. `--start-at orchestrator` replays the orchestrator on recorded triage output with no LLM call. |
-| `--show` | per stage: gateway records, triage expected vs produced with titles and reasons, orchestrator states and event counts. |
+| `--show` | per stage: gateway records, triage expected vs produced with titles, reasons, attachments and ignores read from `alerts.state`, orchestrator states. |
 
 The scorer reports per scenario:
 
@@ -110,14 +112,14 @@ The scorer reports per scenario:
 | `llm` | LLM calls made. |
 | `tok_in`, `tok_out` | prompt and completion tokens summed over those calls, from the provider's `usage`; 0 for the scripted model. |
 | `cost` | litellm's price for those tokens, `-` when it cannot price the model. |
-| `groups` | produced / expected incidents, read from the final `triage.state` snapshot. |
+| `groups` | produced / expected incidents, read from the latest `alerts.state` record per cluster. |
 | `exact` | expected groups reproduced exactly. |
 | `false_merge` | alert pairs grouped together that the expected grouping keeps apart. Any value above 0 fails. |
 | `splits` | alert pairs kept apart that the expected grouping has together. Costs recall only. |
 | `pair_r` | 1 - splits / expected pairs. Compared with `--threshold`. |
 | `ign_p`, `ign_r` | precision and recall of `ignore`. |
 | `prio` | exact groups with the expected priority. |
-| `fallback` | batches that went through the rule-based fallback. |
+| `fallback` | incidents opened by the rule-based fallback (`how == "fallback"`). |
 | (detail) `attached` | alerts attached to an open incident vs the number `expected.json` says must attach; a shortfall is a violation. Shown in `--show` and failure output, not in the table. |
 | `orch` | orchestrator stage: `yes`, `NO` or `skip`. |
 | `ok` | every stage that ran is ok: no violation anywhere, and for triage no false merge, ignore precision and recall 1.0, priorities right on exact groups, `pair_r` at or above the threshold. |
@@ -130,9 +132,9 @@ A `TOTAL` row sums calls, tokens, cost, groups and failures across scenarios, an
 `DIR/<scenario>/<topic>.json` for inspection by hand.
 
 Invariants are checked per stage regardless of the model. Triage: every alert placed exactly once
-across incidents and ignored; every incident has an `incident.opened` event; `triage.state` agrees with
-`incidents.*`. Orchestrator: every incident is `investigating` with one `investigation.started` event
-and matching priority, title and cluster. A violation names its stage. `--threshold F` fails the run when any `pair_r` is below `F` (default 1.0); a
+across incidents and ignored; the incidents in `alerts.state` are exactly those on `incidents.*`.
+Orchestrator: every incident is `investigating` with exactly one state record and matching priority,
+title and cluster. A violation names its stage. `--threshold F` fails the run when any `pair_r` is below `F` (default 1.0); a
 false merge fails at any threshold. The asymmetry is the under-merge policy, see
 [triage](../explanation/triage.md#not-root-cause-attribution). `tests/eval/test_eval.py` keeps the
 harness honest: the scripted model must be clean at every stage, a lumping model must fail triage and
@@ -146,7 +148,7 @@ Scenarios, each probing one thing triage must get right:
 | `ceph-osd-storm` | 10 | 3 incidents, 2 ignored | Cross-layer cause (Ceph → PVC → pods) is not expected of triage: the temporal symptoms stay their own incident. |
 | `same-namespace-two-faults` | 8 | 3 incidents, 2 ignored | Same namespace is not evidence: Loki OOM, Prometheus TSDB volume, and a lone catalogue restart stay apart, grouped by application. |
 | `noise-storm-one-real` | 11 | 2 incidents, 8 ignored | Ignore precision: heartbeats, HPA notices, CPU throttling and a slow job are dropped; node-7 NotReady/Unreachable is one critical incident; a clock skew on another node stays separate. |
-| `rolling-ceph-storm` | 11 in 3 waves | 2 incidents, 2 ignored, 6 attaches | Alerts keep arriving: wave 2 and 3 must attach to incidents restored from `triage.state` by a restarted triage (new OSD, health warning, re-sent osd.3, second temporal pod, PVC) and open only what is new; one LLM call per wave; the orchestrator must not re-open on replay. |
+| `rolling-ceph-storm` | 11 in 3 waves | 2 incidents, 2 ignored, 6 attaches | Alerts keep arriving: wave 2 and 3 must attach to incidents restored from `alerts.state` by a restarted triage (new OSD, health warning, re-sent osd.3, second temporal pod, PVC) and open only what is new; one LLM call per wave; the orchestrator must not re-open on replay. |
 
 `just eval-test` runs the harness self-tests in `tests/eval/test_eval.py` (pytest); `just unit-test` runs
 `tests/unit` only. `just gateway-fire` curls its `alerts.json` at a live gateway.
@@ -215,9 +217,11 @@ Role. Batches alerts per cluster, classifies each batch with one LLM call, opens
 | | |
 | --- | --- |
 | Source | `src/ein_mesh/roles/triage.py` |
-| Reads | `alerts`, consumer group `${KAFKA_GROUP_PREFIX}triage`; `triage.state` at startup without a group |
-| Writes | `incidents.<priority>` (key = `root_id`), `investigation.events` (key = `root_id`, or `triage-<cluster>` for `alerts.ignored`), `triage.state` (key = cluster) |
-| State | In-memory `cluster -> incident id -> Incident` (each with its `group_key`) and `cluster -> ignored fingerprints`. Restored from `triage.state` at startup, rewritten after every change. |
+| Reads | `alerts`, consumer group `${KAFKA_GROUP_PREFIX}triage`; `alerts.state` at startup without a group |
+| Writes | `incidents.<priority>` (key = `root_id`), `alerts.state` (key = cluster) |
+| State | In-memory `cluster -> incident id -> Incident` (each with its `group_key`, `how`, `reason`, `attached`) and `cluster -> fingerprint -> Ignored`. Restored from `alerts.state` at startup, rewritten after every change. Bounded: at most `ALERTS_STATE_MAX_ATTACHMENTS` attachments per incident, ignored entries expire after `IGNORED_TTL_DAYS`. |
+| Done when | Every alert of a poll is in exactly one place: an incident on `incidents.*` and in the state, or an ignored entry in the state. Then offsets commit. |
+| Failures | Model timeout, bad JSON or a failed check: the rule-based fallback decides and marks `how=fallback`. Broker unavailable: `produce` raises, nothing commits, the poll is replayed. |
 | LLM | One `litellm.acompletion` per batch of alerts the rules did not settle, `response_format=json_object`, no sampling parameters (Gemini 3 deprecates them; validation and the fallback guard the output instead). |
 
 **Settings**
@@ -229,28 +233,31 @@ Role. Batches alerts per cluster, classifies each batch with one LLM call, opens
 | `TRIAGE_BATCH_SIZE` | `50` | Flush when pending alerts across all clusters reach this count. Also the consumer's `max_records` per poll. |
 | `TRIAGE_BATCH_SECONDS` | `30` | Flush when the oldest pending alert is this old. |
 | `TRIAGE_LLM_TIMEOUT` | `120` | Seconds before a model call is abandoned and the fallback runs. The consumer's `max_poll_interval_ms` is set to this plus 60 s. |
+| `ALERTS_STATE_MAX_ATTACHMENTS` | `20` | Attachments kept per incident in `alerts.state`, newest last. |
+| `IGNORED_TTL_DAYS` | `7` | An ignored fingerprint not seen again for this long is forgotten at the next state write. |
 
 **Loop**
 
 1. Poll `alerts`. Records that fail `Alert` validation are logged and skipped. Records with
    `status != "firing"` are skipped.
-1b. Rules, per alert: fingerprint in the cluster's ignored set → `alerts.ignored` event with
-   `how=rule`; `group_key` with exactly one open incident in the cluster → attached to it,
-   `alerts.attached` with `how=rule`, state snapshot rewritten. Everything else becomes pending.
+1b. Rules, per alert: fingerprint in the cluster's ignored table → its entry gains the alert id and a
+   fresh `at`; `group_key` with exactly one open incident in the cluster → attached to it with an
+   `Attachment(how=rule)`. Clusters touched by a rule get their state rewritten. Everything else
+   becomes pending.
 2. Pending alerts are grouped by cluster. When the total reaches `TRIAGE_BATCH_SIZE` or the batch
    is `TRIAGE_BATCH_SECONDS` old, every cluster's pending list is handled as one batch each.
 3. Per batch: `classify` (LLM) then `validate`; on `TimeoutError`, `ValidationError`, `ValueError`
    or a litellm `APIError`, `fallback` runs instead.
-4. `apply` produces the incidents, events and state snapshot.
+4. `apply` produces the incidents and the state record.
 5. Offsets are committed. Pending is cleared.
 
 **Decisions** the model may return, and what `apply` does with each:
 
 | `action` | Fields | Effect |
 | --- | --- | --- |
-| `open` | `alerts`, `priority`, `title`, `reason` | New `Incident` with id `inc-<UTC time>-<10 hex>`, e.g. `inc-20261010T074252Z-3f9a1c2b7d`; `IncidentMessage` on `incidents.<priority>`; event `incident.opened`. |
-| `attach` | `alerts`, `incident`, `reason` | Only toward a candidate (an open incident sharing a group with an alert in the batch). Alert ids and names appended; event `alerts.attached`. Idempotent on alert id. |
-| `ignore` | `alerts`, `reason` | Event `alerts.ignored` keyed `triage-<cluster>`; fingerprints added to the cluster's ignored set. |
+| `open` | `alerts`, `priority`, `title`, `reason` | New `Incident` with id `inc-<UTC time>-<10 hex>`, e.g. `inc-20261010T074252Z-3f9a1c2b7d`, carrying `how` and `reason`; `IncidentMessage` on `incidents.<priority>`. |
+| `attach` | `alerts`, `incident`, `reason` | Only toward a candidate (an open incident sharing a group with an alert in the batch). Alert ids and names appended, an `Attachment` recorded. Idempotent on alert id. |
+| `ignore` | `alerts`, `reason` | Each alert's fingerprint gets an `Ignored` entry (`alerts`, `how`, `reason`, `at`) in the cluster's table. |
 
 **Validation** rejects an output when any alert id in the batch is missing or appears twice, or when
 `attach` names an incident that is not a candidate.
@@ -259,32 +266,33 @@ Role. Batches alerts per cluster, classifies each batch with one LLM call, opens
 (namespace when empty). A group with candidates gets one `attach` to the newest; otherwise one `open` with priority `critical` if any alert has
 `severity=critical`, else `normal`, titled `<cluster>/<namespace>: <alertnames>`.
 
-Events record `how` as `rule`, `llm` or `fallback`.
+Every decision carries `how`: `rule`, `llm` or `fallback`.
 
 ## `ein-mesh orchestrator`
 
-Role, PoC slice. Takes ownership of every incident and moves it to `investigating`. No contracts,
-no questions, no closing, no LLM yet.
+Role, PoC slice. Takes ownership of every incident and moves it to `investigating`. No tasks, no
+questions, no closing, no LLM yet.
 
 | | |
 | --- | --- |
 | Source | `src/ein_mesh/roles/orchestrator.py` |
-| Reads | `incidents.critical`, `incidents.normal`, consumer group `${KAFKA_GROUP_PREFIX}orchestrator`; `investigation.state` at startup without a group |
-| Writes | `investigation.state` (key = `root_id`), `investigation.events` (key = `root_id`, `role=orchestrator`) |
-| State | In-memory `root_id -> InvestigationState`, including the bounded `context` summary. Restored from `investigation.state` at startup, rewritten on every transition; events are not replayed. |
+| Reads | `incidents.critical`, `incidents.normal`, consumer group `${KAFKA_GROUP_PREFIX}orchestrator`; `incidents.state` at startup without a group |
+| Writes | `incidents.state` (key = `root_id`) |
+| State | In-memory `root_id -> IncidentState`, including the bounded `context` summary. Restored from `incidents.state` at startup, rewritten on every transition; nothing is replayed. This record is also the incident's lifecycle status. |
+| Done when | The incident has an `investigating` record on `incidents.state`. Then offsets commit. |
+| Failures | Broker unavailable: `produce` raises, nothing commits, the poll is replayed and the known `root_id` is skipped. |
 | LLM | None in this slice. |
 
 **Loop**
 
 1. Poll both incident topics. Records that fail `IncidentMessage` validation are logged and skipped.
 2. A `root_id` already in the table is skipped with a log line (replay after a crash).
-3. Otherwise: write `InvestigationState` with `status=investigating`, then event
-   `investigation.started` with `priority`, `title` and the alert ids.
+3. Otherwise: write `IncidentState` with `status=investigating`.
 4. Commit offsets.
 
-**Co-partitioning.** `incidents.*`, `investigation.events` and `investigation.state` are all keyed
-by `root_id` and created with the same partition count (`TOPIC_PARTITIONS`), so one instance holds
-the state for every record it receives. `Role.run` verifies the layout through `MessageBus.verify`
+**Co-partitioning.** `incidents.*`, `incidents.state`, `incidents.tasks` and `incidents.reports` are
+all keyed by `root_id` and created with the same partition count (`TOPIC_PARTITIONS`), so one
+instance holds the state for every record it receives. `Role.run` verifies the layout through `MessageBus.verify`
 before restoring state and refuses to start on a mismatch. Running more than one instance
 additionally needs the range assignor and state load/unload on rebalance, neither of which this
 slice implements.
@@ -314,13 +322,15 @@ assigned partitions. This is the roster of running roles (design note: "怎麼�
 - Needs only the data-integrator user: `Describe` on `${KAFKA_GROUP_PREFIX}*` groups and the mesh
   topics. Groups outside the prefix are not visible to it and not listed.
 
-## `ein-mesh reset [--yes]`
+## `ein-mesh reset [--yes] [--prune]`
 
 Development only. Deletes every mesh topic and recreates it with `ein-mesh init`, which empties the
 mesh and drops every role's committed offsets along with the topics. Asks for confirmation unless
 `--yes`. Refuses while any `${KAFKA_GROUP_PREFIX}*` group has a member: stop `triage`,
-`orchestrator`, `gateway` and `tail` first. Needs the `DELETE` topic ACL that the Terraform module
-grants (`entity-permissions`); without it the command fails and says how to apply the grant.
+`orchestrator`, `gateway` and `tail` first. `--prune` also deletes every topic under `TOPIC_PREFIX`
+that the layout does not name (left over from an earlier topic model) without recreating it. Needs the
+`DELETE` topic ACL that the Terraform module grants (`entity-permissions`); without it the command
+fails and says how to apply the grant.
 
 ## `ein-mesh tail [TOPIC]...`
 
@@ -329,10 +339,10 @@ Integrator, `src/ein_mesh/integrators/tail.py`. Prints every record on the given
 
 | Argument / flag | Default | Description |
 | --- | --- | --- |
-| `TOPIC` (repeatable) | every mesh topic | A short name (`alerts`, `triage.state`, `incidents.critical`, `incidents.normal`, `investigation.events`, `investigation.state`) resolved through `Topics.resolve`, or a full topic name passed through unchanged. |
+| `TOPIC` (repeatable) | every mesh topic | A short name (`alerts`, `alerts.state`, `incidents.critical`, `incidents.normal`, `incidents.state`, `incidents.tasks`, `incidents.reports`) resolved through `Topics.resolve`, or a full topic name passed through unchanged. |
 | `--from-start` | off | Read from the earliest offset instead of only new records. |
 
-No consumer group, so it never affects anyone's offsets. `just tail incidents.critical investigation.events`.
+No consumer group, so it never affects anyone's offsets. `just tail incidents.critical incidents.state`.
 
 ## `just gateway-fire`
 

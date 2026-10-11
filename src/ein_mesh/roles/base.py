@@ -1,9 +1,9 @@
-"""Base class for every role: one consumer loop, a restore step, and the event helper.
+"""Base class for every role: one consumer loop and a restore step.
 
 A role owns one state transition of the incident lifecycle. Subclasses declare the topics they
-consume, rebuild in-memory state in ``restore``, and implement ``handle`` for each poll. The loop,
-the commit-after-produce rule and the event envelope live here so a role's own code is only the
-decision logic, which is what unit tests and evals exercise through an ``InMemoryBus``.
+consume, rebuild in-memory state in ``restore``, and implement ``handle`` for each poll. The loop
+and the commit-after-produce rule live here so a role's own code is only the decision logic, which
+is what unit tests and evals exercise through an ``InMemoryBus``.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from typing import ClassVar
 
 from ein_mesh.bus import MessageBus, Record
 from ein_mesh.config import Topics
-from ein_mesh.schemas import Event
 
 log = logging.getLogger(__name__)
 
@@ -46,12 +45,6 @@ class Role(ABC):
     async def handle(self, records: list[Record]) -> bool:
         """Process one poll (possibly empty). Return True when offsets may be committed, i.e. every
         record received so far has had its outputs produced."""
-
-    # -- shared helpers --
-
-    async def event(self, root_id: str, kind: str, body: dict) -> None:
-        await self.bus.produce(self.topics.events, root_id,
-                               Event(root_id=root_id, role=self.name, kind=kind, body=body))
 
     # -- the loop --
 

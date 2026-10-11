@@ -1,5 +1,6 @@
 """The recorded storm end to end: Alertmanager payload -> gateway mapping -> triage with the LLM
-mocked at the litellm boundary -> incidents, events, state. No broker, no network."""
+mocked at the litellm boundary -> incidents and alerts.state -> orchestrator and incidents.state.
+No broker, no network."""
 
 import json
 from types import SimpleNamespace
@@ -66,18 +67,18 @@ async def test_storm_through_gateway_mapping_triage_and_orchestrator(bus, topics
     normal = bus.values(topics.incidents("normal"))
     assert len(critical) == 2 and sorted(len(c["alerts"]) for c in critical) == [3, 4]
     assert len(normal) == 1 and normal[0]["title"] == "node-exporter targets down"
-    kinds = sorted(e["kind"] for e in bus.values(topics.events))
-    assert kinds == ["alerts.ignored", "incident.opened", "incident.opened", "incident.opened"]
-    assert all(e["body"]["how"] == "llm" for e in bus.values(topics.events))
+    st = bus.values(topics.alerts_state)[-1]
+    assert len(st["incidents"]) == 3 and all(i["how"] == "llm" for i in st["incidents"])
+    assert len(st["ignored"]) == 2 and all(e["how"] == "llm" and e["reason"] == "noise" for e in st["ignored"].values())
 
     await Orchestrator(bus, topics).run_until_idle()
-    states = {s["root_id"]: s["status"] for s in bus.values(topics.investigation_state)}
+    states = {s["root_id"]: s["status"] for s in bus.values(topics.incidents_state)}
     assert states == {c["root_id"]: "investigating" for c in critical + normal}
 
 
 async def test_second_wave_attaches_by_rule_after_a_restart(bus, topics, monkeypatch):
     """Replay the same storm after triage already opened incidents, with a fresh Triage that restores from
-    triage.state: re-sent incident alerts attach by rule (their group has exactly one open incident), re-sent
+    alerts.state: re-sent incident alerts attach by rule (their group has exactly one open incident), re-sent
     noise is ignored by rule (fingerprint remembered in the state), and the model is not called at all."""
     calls = []
 
@@ -92,19 +93,19 @@ async def test_second_wave_attaches_by_rule_after_a_restart(bus, topics, monkeyp
         await bus.produce(topics.alerts, t.cluster, t)
     await Triage(bus, topics, ts).run_until_idle()
     assert len(calls) == 1
-    before = {i["id"]: len(i["alert_ids"]) for i in bus.values(topics.triage_state)[-1]["incidents"]}
+    before = {i["id"]: len(i["alert_ids"]) for i in bus.values(topics.alerts_state)[-1]["incidents"]}
 
     wave2 = storm_payload()
     for alert in wave2["alerts"]:
         alert["startsAt"] = "2026-10-10T00:05:00+00:00"  # new instances, same fingerprints
         t = to_alert(alert)
         await bus.produce(topics.alerts, t.cluster, t)
-    await Triage(bus, topics, ts).run_until_idle()  # a fresh process: restores from triage.state
+    await Triage(bus, topics, ts).run_until_idle()  # a fresh process: restores from alerts.state
 
     assert len(calls) == 1, "wave 2 needs no model call: attach and ignore both happen by rule"
-    ignored = [e for e in bus.values(topics.events) if e["kind"] == "alerts.ignored"]
-    assert [e["body"]["how"] for e in ignored] == ["llm", "rule"] and len(ignored[1]["body"]["alerts"]) == 2
-    after = {i["id"]: len(i["alert_ids"]) for i in bus.values(topics.triage_state)[-1]["incidents"]}
+    st = bus.values(topics.alerts_state)[-1]
+    assert len(st["ignored"]) == 2 and all(len(e["alerts"]) == 2 and e["how"] == "llm" for e in st["ignored"].values()), \
+        "the re-sent noise joined the entries the model created; the fingerprints are the same"
+    after = {i["id"]: len(i["alert_ids"]) for i in st["incidents"]}
     assert set(after) == set(before) and all(after[k] == 2 * before[k] for k in before), "every incident doubled, none opened"
-    hows = {e["body"]["how"] for e in bus.values(topics.events) if e["kind"] == "alerts.attached"}
-    assert hows == {"rule"}
+    assert {a["how"] for i in st["incidents"] for a in i["attached"]} == {"rule"}

@@ -49,15 +49,18 @@ def init() -> None:
 
 @cli.command()
 @click.option("--yes", is_flag=True, help="Do not ask for confirmation.")
-def reset(yes: bool) -> None:
-    """Development only: delete every mesh topic and create it again, empty. Every alert, incident,
-    event and state snapshot is lost and every role's committed offsets go with the topics. Refuses
-    while a role is connected; stop triage, orchestrator, gateway and tail first."""
+@click.option("--prune", is_flag=True, help="Also delete topics under TOPIC_PREFIX that the layout no longer names.")
+def reset(yes: bool, prune: bool) -> None:
+    """Development only: delete every mesh topic and create it again, empty. Every alert, incident
+    and state snapshot is lost and every role's committed offsets go with the topics. Refuses while
+    a role is connected; stop triage, orchestrator, gateway and tail first. --prune also removes
+    topics left over from an earlier topic model."""
     ks, tp = KafkaSettings(), Topics()
     if not yes:
-        click.confirm(f"Delete all records in {list(tp.all())} on {ks.bootstrap}?", abort=True)
+        what = f"Delete all records in {list(tp.all())}" + (" and every other topic under the prefix" if prune else "")
+        click.confirm(f"{what} on {ks.bootstrap}?", abort=True)
     try:
-        deleted, created = asyncio.run(reset_topics(ks, tp))
+        deleted, created = asyncio.run(reset_topics(ks, tp, prune=prune))
     except TopicAuthorizationFailedError as e:  # before RuntimeError: aiokafka errors subclass it
         raise click.ClickException(
             f"{e}. This user may not DELETE topics. The Terraform module grants it through "
@@ -154,8 +157,8 @@ def gateway(host: str, port: int) -> None:
 def tail(topic: tuple[str, ...], from_start: bool) -> None:
     """Tail integrator: print records from TOPIC... as they arrive.
 
-    TOPIC is a short name (alerts, triage.state, incidents.critical, incidents.normal,
-    investigation.events, investigation.state) or a full topic name. No TOPIC means every mesh topic.
+    TOPIC is a short name (alerts, alerts.state, incidents.critical, incidents.normal, incidents.state,
+    incidents.tasks, incidents.reports) or a full topic name. No TOPIC means every mesh topic.
     """
     from ein_mesh.integrators import tail as run_tail
 

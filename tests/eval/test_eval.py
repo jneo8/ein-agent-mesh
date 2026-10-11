@@ -35,21 +35,20 @@ async def test_scripted_model_is_clean_at_every_stage(scenario):
 
 
 async def test_waves_attach_through_a_restarted_triage():
-    """Three waves, three fresh Triage instances: later waves attach to incidents restored from triage.state,
+    """Three waves, three fresh Triage instances: later waves attach to incidents restored from alerts.state,
     the orchestrator sees each incident once, and the state snapshot ends with every alert placed."""
     [scenario] = scenarios(["rolling-ceph-storm"])
     run = await run_scenario(scenario)
     s = score(run)
     assert s.violations == [] and s.perfect, s
     assert s.llm_calls == 2, "wave 1 (ceph), wave 2 (new temporal group); wave 3 is all rule attaches"
-    events = run.bus.values(run.topics.events)
-    kinds = [e["kind"] for e in events]
-    assert kinds.count("incident.opened") == 2 and kinds.count("alerts.attached") >= 3
-    assert all(e["body"]["how"] == "rule" for e in events if e["kind"] == "alerts.attached")
-    assert kinds.count("investigation.started") == 2, "orchestrator ran after every wave but skipped replays"
-    snapshots = run.bus.values(run.topics.triage_state)
+    snapshots = run.bus.values(run.topics.alerts_state)
     assert len(snapshots) == 3, "one state snapshot per wave for the single cluster"
-    assert sum(len(i["alert_ids"]) for i in snapshots[-1]["incidents"]) == 9
+    final = snapshots[-1]["incidents"]
+    attachments = [a for i in final for a in i["attached"]]
+    assert len(final) == 2 and len(attachments) >= 3 and all(a["how"] == "rule" for a in attachments)
+    assert len(run.bus.values(run.topics.incidents_state)) == 2, "orchestrator ran after every wave but skipped replays"
+    assert sum(len(i["alert_ids"]) for i in final) == 9
 
 
 async def test_lumping_model_fails_triage_only():
@@ -93,14 +92,14 @@ async def test_dead_model_shows_as_fallback():
     with patch("tests.eval.harness.scripted_completion", lambda run: broken):
         s = score(await run_scenario(scenario))
     assert s.violations == []
-    assert s.fallback_batches >= 1 and not s.ok()
+    assert s.fallback_opens >= 1 and not s.ok()
 
 
 async def test_until_stops_after_a_stage():
     [scenario] = scenarios(["ceph-osd-storm"])
     run = await run_scenario(scenario, until="triage")
     assert run.stages == ["gateway", "triage"]
-    assert run.bus.values(run.topics.investigation_state) == []
+    assert run.bus.values(run.topics.incidents_state) == []
     s = score(run)
     assert s.orchestrator.skipped and s.ok()
 

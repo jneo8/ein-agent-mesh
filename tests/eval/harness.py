@@ -1,13 +1,13 @@
 """Load a scenario and run it through the mesh on an InMemoryBus, one stage at a time.
 
-Stages, in order: ``gateway`` (payload -> alert records), ``triage`` (alerts -> incidents, events, triage
-state), ``orchestrator`` (incidents -> investigation state). Each stage reads only what the previous one
-left on the bus, so a run can stop after any stage (``until``) or start at a later one from a saved dump
-(``start_at`` + a pre-loaded bus) to debug that stage alone.
+Stages, in order: ``gateway`` (payload -> alert records), ``triage`` (alerts -> incidents and
+``alerts.state``), ``orchestrator`` (incidents -> ``incidents.state``). Each stage reads only what the
+previous one left on the bus, so a run can stop after any stage (``until``) or start at a later one from a
+saved dump (``start_at`` + a pre-loaded bus) to debug that stage alone.
 
 A scenario's ``alerts.json`` is one Alertmanager payload, or ``{"waves": [payload, ...]}`` for alerts that
 keep arriving: the gateway and triage stages then run once per wave, with a fresh ``Triage`` each time
-(so it restores from ``triage.state`` like a restarted process), and the orchestrator after every wave.
+(so it restores from ``alerts.state`` like a restarted process), and the orchestrator after every wave.
 Matchers may carry ``"_wave": n`` (1-based) to name one wave's instance of a repeated alert."""
 
 from __future__ import annotations
@@ -88,13 +88,13 @@ def scripted_completion(run: Run):
     alerts actually present in the prompt's batch (so it also works across waves and split batches).
 
     An ``attach`` decision names its target as ``"incident": <matcher>``: the open incident that already
-    holds that alert, looked up in the latest ``triage.state`` snapshot, since the script cannot know ids."""
+    holds that alert, looked up in the latest ``alerts.state`` snapshot, since the script cannot know ids."""
     scenario = run.scenario
     assert scenario.model is not None, f"{scenario.name} has no model.json; use --llm"
 
     def incident_holding(alert_id: str) -> str:
         latest: dict[str, dict] = {}
-        for snap in run.bus.values(run.topics.triage_state):
+        for snap in run.bus.values(run.topics.alerts_state):
             latest[snap["cluster"]] = snap
         for snap in latest.values():
             for inc in snap["incidents"]:
@@ -181,7 +181,7 @@ async def stage_gateway(run: Run, wave: int | None = None) -> None:
 
 
 async def stage_triage(run: Run, llm: bool, ts: TriageSettings) -> None:
-    """One fresh Triage over whatever is unread on the alerts topic; it restores from triage.state first."""
+    """One fresh Triage over whatever is unread on the alerts topic; it restores from alerts.state first."""
     inner = triage_mod.litellm.acompletion if llm else scripted_completion(run)
 
     async def counting(*a, **kw):

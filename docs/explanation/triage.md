@@ -1,7 +1,7 @@
 # Triage
 
 - The role that owns `detected → open` and the changes within `open` (attach, merge): reads
-  `alerts`, decides what each alert means, writes incidents, events and its own checkpoint.
+  `alerts`, decides what each alert means, writes incidents and its own memory, `alerts.state`.
 - Settings, decisions and the loop: [roles reference](../reference/roles.md#ein-mesh-triage).
 
 ## The problem it is shaped by
@@ -63,49 +63,53 @@
   - ignore severity `info` and `none` outright;
   - attach to the newest candidate of the alert's group;
   - otherwise open one incident per group (per namespace when there is no group key).
-- Ignored fingerprints are remembered in `triage.state`, so re-sends are ignored by rule next time.
-- Every decision, LLM or fallback, is recorded on `investigation.events` with its reason and which
-  path produced it, so model quality can be read off the log.
+- Ignored fingerprints are remembered in `alerts.state`, so re-sends are ignored by rule next time.
+- Every decision, LLM, rule or fallback, is kept in `alerts.state` with its reason and which path
+  produced it (`how`), so model quality can be read off the state.
 
-## Two outputs for two readers
+## Two outputs: a message and a memory
 
 - `open` → a record on `incidents.critical` or `incidents.normal`.
   - The work order: a new investigation exists.
   - Grouped alerts ride inline so the orchestrator need not look them up.
   - Consumed once and discarded.
-- Every decision (open, attach, ignore), by rule or by model → a record on `investigation.events`
-  with `how` = `rule`, `llm` or `fallback`.
-  - The audit log: why.
-  - Kept for weeks; read by the orchestrator, the frontend and retrospectives.
+- Every decision (open, attach, ignore), by rule or by model → the cluster's `alerts.state` record,
+  rewritten whole: each incident carries `how` and `reason` for its opening and an `Attachment` per
+  later alert, each ignored fingerprint an `Ignored` entry with its reason.
+  - The memory: why, as far back as the incident is open.
+  - Read by triage itself on restart and by the evals; nothing else.
 - Incidents are split by priority:
   - Kafka has no priority inside a topic;
   - two topics let the downstream dedicate a consumer to critical so a normal backlog never delays
     it;
   - with two levels the topic count stays small; more levels would be one topic plus a header.
 
-## The open-incident table and its checkpoint
+## The open-incident table and its state topic
 
 - To attach by rule and to offer candidates, triage must know what is already open and what it
   already judged noise.
 - The table (incidents with their `group_key`, plus ignored fingerprints) lives in memory per cluster.
-- After every applied batch, the whole table for that cluster is written to `triage.state`.
-- `triage.state` is compacted: only the latest snapshot per cluster survives. Triage rebuilds from
-  it on startup.
+- After every change, the whole table for that cluster is written to `alerts.state`.
+- `alerts.state` is compacted: only the latest record per cluster survives. Triage rebuilds from it
+  on startup.
+- It is bounded: an incident keeps its last `ALERTS_STATE_MAX_ATTACHMENTS` attachments, and an ignored
+  fingerprint not seen for `IGNORED_TTL_DAYS` is forgotten at the next write, so noise that stopped
+  firing does not pin the record forever.
 - This is the changelog half of the Kafka Streams pattern; the in-memory dict stands in for RocksDB.
 - Why Kafka rather than local disk:
   - a restarted pod can land on any node, no PVC, no backup;
-  - `alerts` and `triage.state` are both keyed by cluster, so a second replica that takes over a
+  - `alerts` and `alerts.state` are both keyed by cluster, so a second replica that takes over a
     partition loads exactly the clusters it now owns;
   - a topic can sit inside a Kafka transaction with the offset commit; a local file cannot. v1 does
     not use transactions yet, so this is a door left open.
-- Nothing else should read `triage.state`:
+- Nothing else should read `alerts.state`:
   - its fields are shaped for the prompt, not as a contract;
-  - the outward-facing picture is `investigation.state`, owned by the orchestrator.
+  - the outward-facing picture is `incidents.state`, owned by the orchestrator.
 
 ## Commit last
 
-- Offsets on `alerts` are committed only after the batch's incidents, events and state snapshot
-  are produced.
+- Offsets on `alerts` are committed only after the batch's incidents and state record are
+  produced.
 - A crash mid-batch replays the batch; duplicates are absorbed as attaches.
 - The v1 stand-in for the transactional commit the design asks for.
 
@@ -113,16 +117,15 @@
 
 - **Nothing removes an incident from the table.**
   - It only grows, and so does the open-incident summary in the prompt.
-  - Fix: subscribe to `investigation.state`, drop an incident when its status becomes `closed`,
-    rewrite `triage.state`.
+  - Fix: subscribe to `incidents.state`, drop an incident when its status becomes `closed`,
+    rewrite `alerts.state`.
   - Prune only on `closed`. While the report awaits sign-off (`waiting`, `accept_report`) the
     incident stays in the table, so new alerts still attach and a send-back needs no rebuild.
-  - The ignored-fingerprint set has no bound or TTL yet either.
 - **`resolved` alerts are skipped.**
   - Alertmanager's resolved notifications already arrive on `alerts`.
   - Plan: emit `alerts.resolved` when every alert of an incident has resolved, as a hint to the
     orchestrator.
 - **`ignore` has no `root_id`.**
-  - Ignored alerts are keyed `triage-<cluster>`.
-  - A `root_id` lookup will not show what a storm discarded; retrospectives must query by cluster
-    too.
+  - Ignored alerts live under their fingerprint in the cluster's `alerts.state`.
+  - A `root_id` lookup will not show what a storm discarded; retrospectives must read the cluster's
+    state too.

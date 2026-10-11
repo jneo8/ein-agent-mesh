@@ -46,7 +46,7 @@
 
 - The dedup set is in memory. A restart forgets it; Alertmanager's next repeat goes through.
 - Accepted in v1: triage absorbs duplicates as an `attach` or an `ignore`.
-- Fix if ever needed: a compacted seen-set topic, the same pattern as `triage.state`.
+- Fix if ever needed: a compacted seen-set topic, the same pattern as `alerts.state`.
 
 ## Standing in for Alertmanager
 

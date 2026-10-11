@@ -2,8 +2,9 @@
 
 - gateway: every payload alert became exactly one record, ids unique, cluster/namespace mapped.
 - triage: grouping against the expected incidents under the under-merge policy (a false merge fails,
-  a split only costs recall), ignore precision/recall, priority, and triage's own invariants.
-- orchestrator: every incident has an investigating state and a started event, nothing extra.
+  a split only costs recall), ignore precision/recall, priority, and triage's own invariants. Decisions
+  are read from the latest ``alerts.state`` per cluster, the role's memory.
+- orchestrator: every incident has an investigating ``incidents.state`` record, nothing extra.
 """
 
 from __future__ import annotations
@@ -42,8 +43,8 @@ class StageScore:
             return (f"groups={m['produced_groups']}/{m['expected_groups']} exact={m['exact_groups']} "
                     f"false_merge={m['false_merges']} splits={m['splits']} pair_r={m['pair_recall']} "
                     f"ign={m['ignore_precision']}/{m['ignore_recall']} prio={m['priority_hits']}/{m['exact_groups']} "
-                    f"attached={m['attached']}/{m['expected_attached']} fallback={m['fallback_batches']}")
-        return f"{m['investigating']}/{m['incidents']} investigating, {m['started_events']} started events"
+                    f"attached={m['attached']}/{m['expected_attached']} fallback={m['fallback_opens']}")
+        return f"{m['investigating']}/{m['incidents']} investigating"
 
 
 @dataclass
@@ -89,6 +90,14 @@ def _ratio(num: int, den: int) -> float:
     return 1.0 if den == 0 else num / den
 
 
+def latest_alerts_state(run: Run) -> dict[str, dict]:
+    """cluster -> the last alerts.state record for it: what triage would restore on restart."""
+    latest: dict[str, dict] = {}
+    for s in run.bus.values(run.topics.alerts_state):
+        latest[s["cluster"]] = s
+    return latest
+
+
 def score_gateway(run: Run) -> StageScore:
     if not run.ran("gateway"):
         return StageScore("gateway", skipped=True)
@@ -117,10 +126,10 @@ def score_triage(run: Run) -> StageScore:
     exp_ignored = set(sc.resolve_all(sc.expected.get("ignored", [])))
 
     incidents = bus.values(t.incidents("critical")) + bus.values(t.incidents("normal"))
-    events = bus.values(t.events)
-    final = {i["id"]: (set(i["alert_ids"]), i["priority"]) for s in bus.values(t.triage_state) for i in s["incidents"]}
+    state_incidents = [i for s in latest_alerts_state(run).values() for i in s["incidents"]]
+    final = {i["id"]: (set(i["alert_ids"]), i["priority"]) for i in state_incidents}
     prod_groups = list(final.values()) if final else [(set(a["id"] for a in i["alerts"]), i["priority"]) for i in incidents]
-    prod_ignored = {aid for e in events if e["kind"] == "alerts.ignored" for aid in e["body"]["alerts"]}
+    prod_ignored = {aid for s in latest_alerts_state(run).values() for e in s["ignored"].values() for aid in e["alerts"]}
 
     exact = prio_hits = 0
     for g, prio in exp_groups:
@@ -137,15 +146,12 @@ def score_triage(run: Run) -> StageScore:
         missing = all_ids - set(placed)
         dup = {x for x in placed if placed.count(x) > 1}
         violations.append(f"alerts not placed exactly once: missing={sorted(missing)} duplicated={sorted(dup)}")
-    opened = {e["root_id"] for e in events if e["kind"] == "incident.opened"}
     inc_ids = {i["root_id"] for i in incidents}
-    if opened != inc_ids:
-        violations.append(f"incident.opened events {sorted(opened)} != incidents {sorted(inc_ids)}")
-    if final and set(final) != inc_ids:
-        violations.append(f"triage.state incidents {sorted(final)} != incidents {sorted(inc_ids)}")
+    if set(final) != inc_ids:
+        violations.append(f"alerts.state incidents {sorted(final)} != incidents {sorted(inc_ids)}")
     # alerts the scenario says must have joined an existing incident rather than opened a new one
     exp_attached = set(sc.resolve_all(sc.expected.get("attached", [])))
-    attached = {aid for e in events if e["kind"] == "alerts.attached" for aid in e["body"]["alerts"]}
+    attached = {aid for i in state_incidents for a in i["attached"] for aid in a["alerts"]}
     not_attached = exp_attached - attached
     if not_attached:
         violations.append(f"{len(not_attached)} alert(s) expected to attach to an open incident were not attached")
@@ -155,7 +161,7 @@ def score_triage(run: Run) -> StageScore:
         "false_merges": len(pp - ep), "splits": len(ep - pp), "pair_recall": round(_ratio(len(ep & pp), len(ep)), 3),
         "ignore_precision": round(_ratio(ig_tp, len(prod_ignored)), 3),
         "ignore_recall": round(_ratio(ig_tp, len(exp_ignored)), 3), "priority_hits": prio_hits,
-        "fallback_batches": sum(1 for e in events if e["kind"] == "incident.opened" and e["body"].get("how") == "fallback"),
+        "fallback_opens": sum(1 for i in state_incidents if i["how"] == "fallback"),
         "attached": len(attached), "expected_attached": len(exp_attached),
     }, violations)
 
@@ -165,20 +171,19 @@ def score_orchestrator(run: Run) -> StageScore:
         return StageScore("orchestrator", skipped=True)
     bus, t = run.bus, run.topics
     incidents = {i["root_id"]: i for i in bus.values(t.incidents("critical")) + bus.values(t.incidents("normal"))}
-    states = {s["root_id"]: s for s in bus.values(t.investigation_state)}
-    started = [e for e in bus.values(t.events) if e["kind"] == "investigation.started"]
+    states = {s["root_id"]: s for s in bus.values(t.incidents_state)}  # last record per root_id wins
     investigating = {rid for rid, s in states.items() if s["status"] == "investigating"}
     violations = []
     if investigating != set(incidents):
         violations.append(f"investigating {sorted(investigating)} != incidents {sorted(incidents)}")
-    if {e["root_id"] for e in started} != set(incidents) or len(started) != len(incidents):
-        violations.append(f"{len(started)} investigation.started events for {len(incidents)} incidents")
+    if len(bus.values(t.incidents_state)) != len(incidents):
+        violations.append(f"{len(bus.values(t.incidents_state))} state records for {len(incidents)} incidents: "
+                          "a replayed incident was not skipped")
     for rid, st in states.items():
         inc = incidents.get(rid)
         if inc and (st["priority"], st["title"], st["cluster"]) != (inc["priority"], inc["title"], inc["cluster"]):
             violations.append(f"state {rid} disagrees with its incident on priority/title/cluster")
-    return StageScore("orchestrator", {"incidents": len(incidents), "investigating": len(investigating),
-                                       "started_events": len(started)}, violations)
+    return StageScore("orchestrator", {"incidents": len(incidents), "investigating": len(investigating)}, violations)
 
 
 def score(run: Run) -> Score:

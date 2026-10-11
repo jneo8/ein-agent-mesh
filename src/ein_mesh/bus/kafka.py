@@ -199,13 +199,14 @@ async def wait_for_topics_gone(admin: AIOKafkaAdminClient, names: list[str], att
     raise RuntimeError(f"topics still present after delete: {[n for n in names if counts.get(n)]}")
 
 
-async def reset_topics(settings: KafkaSettings, topics: Topics) -> tuple[list[str], list[str]]:
+async def reset_topics(settings: KafkaSettings, topics: Topics, prune: bool = False) -> tuple[list[str], list[str]]:
     """Development only: wipe every mesh topic by deleting and recreating it, returning
     ``(deleted, created)``. Refuses while any role is connected, because a live consumer would keep
     its in-memory position and could skip records written to the fresh topic. Deleting a topic also
-    drops the committed offsets of every group for it, so roles restart from the beginning. Needs
-    ``DELETE`` on the topics, which the Terraform module grants through the data-integrator's
-    ``entity-permissions``."""
+    drops the committed offsets of every group for it, so roles restart from the beginning. With
+    ``prune``, topics under the prefix that the layout no longer names (an earlier topic model) are
+    deleted too and not recreated. Needs ``DELETE`` on the topics, which the Terraform module grants
+    through the data-integrator's ``entity-permissions``."""
     active = [g for g in await consumer_groups(settings, settings.group_prefix) if g["members"]]
     if active:
         raise RuntimeError("roles still connected, stop them first: "
@@ -216,6 +217,11 @@ async def reset_topics(settings: KafkaSettings, topics: Topics) -> tuple[list[st
     try:
         names = list(topics.all())
         present = [n for n, c in (await partition_counts(admin, names)).items() if c]
+        if prune:
+            stale = topics.stale(sorted(await admin.list_topics()))
+            if stale:
+                log.info("pruning topics outside the layout: %s", stale)
+            present += stale
         if present:
             resp = await admin.delete_topics(present)
             for topic, code in resp.topic_error_codes:

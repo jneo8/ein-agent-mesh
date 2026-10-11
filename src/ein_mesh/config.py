@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 
 def _env(name: str, default: str = "") -> str:
@@ -33,52 +34,56 @@ class KafkaSettings:
 class Topics:
     """Topic names. ``TOPIC_PREFIX`` sets the family; ``TOPIC_<NAME>`` overrides one topic outright.
 
+    Two kinds of topic, nothing else. A *flow* topic carries one message type from one role to the
+    next (``alerts``, ``incidents.critical`` / ``incidents.normal``, ``incidents.tasks``,
+    ``incidents.reports``). A *state* topic is the memory of exactly one role, keyed by that role's
+    unit of work and compacted, read back only by that role when it restarts: ``alerts.state`` is
+    what the consumer of ``alerts`` (triage) remembers per cluster, ``incidents.state`` what the
+    consumer of ``incidents.*`` (the orchestrator) remembers per root_id. A topic exists only when
+    something consumes it.
+
     The Terraform data-integrator grants PREFIXED ACLs on ``TOPIC_PREFIX``, so an override that
     leaves the prefix needs its own ACL.
 
     ``TOPIC_PARTITIONS`` (default 12) is the partition count of every mesh topic. One number for all
     of them because the topics keyed by ``root_id`` must be co-partitioned: a record's partition is
-    ``hash(key) % partitions``, so the instance holding an investigation's state only receives its
-    later records when every topic has the same count. The number is fixed once topics exist; changing
-    it moves live keys to other partitions. ``TOPIC_REPLICATION`` (default 1) must not exceed the
+    ``hash(key) % partitions``, so the instance holding an incident's state only receives its later
+    records when every topic has the same count. The number is fixed once topics exist; changing it
+    moves live keys to other partitions. ``TOPIC_REPLICATION`` (default 1) must not exceed the
     broker count.
     """
 
     prefix: str = field(default_factory=lambda: _env("TOPIC_PREFIX", "ein."))
     alerts: str = field(default_factory=lambda: _env("TOPIC_ALERTS"))
-    triage_state: str = field(default_factory=lambda: _env("TOPIC_TRIAGE_STATE"))
+    alerts_state: str = field(default_factory=lambda: _env("TOPIC_ALERTS_STATE"))
     incidents_critical: str = field(default_factory=lambda: _env("TOPIC_INCIDENTS_CRITICAL"))
     incidents_normal: str = field(default_factory=lambda: _env("TOPIC_INCIDENTS_NORMAL"))
-    events: str = field(default_factory=lambda: _env("TOPIC_EVENTS"))
-    investigation_state: str = field(default_factory=lambda: _env("TOPIC_INVESTIGATION_STATE"))
+    incidents_state: str = field(default_factory=lambda: _env("TOPIC_INCIDENTS_STATE"))
+    tasks: str = field(default_factory=lambda: _env("TOPIC_INCIDENTS_TASKS"))
+    reports: str = field(default_factory=lambda: _env("TOPIC_INCIDENTS_REPORTS"))
     partitions: int = field(default_factory=lambda: int(_env("TOPIC_PARTITIONS", "12")))
     replication: int = field(default_factory=lambda: int(_env("TOPIC_REPLICATION", "1")))
 
     def __post_init__(self) -> None:
         if self.partitions < 1:
             raise ValueError(f"TOPIC_PARTITIONS must be >= 1, got {self.partitions}")
-        defaults = {
-            "alerts": "alerts",
-            "triage_state": "triage.state",
-            "incidents_critical": "incidents.critical",
-            "incidents_normal": "incidents.normal",
-            "events": "investigation.events",
-            "investigation_state": "investigation.state",
-        }
-        for attr, suffix in defaults.items():
+        for attr, suffix in self.SUFFIXES.items():
             if not getattr(self, attr):
                 object.__setattr__(self, attr, f"{self.prefix}{suffix}")
 
+    SUFFIXES: ClassVar[dict[str, str]] = {
+        "alerts": "alerts",
+        "alerts_state": "alerts.state",
+        "incidents_critical": "incidents.critical",
+        "incidents_normal": "incidents.normal",
+        "incidents_state": "incidents.state",
+        "tasks": "incidents.tasks",
+        "reports": "incidents.reports",
+    }
+
     def by_suffix(self) -> dict[str, str]:
         """Short name -> full topic name, e.g. ``incidents.critical`` -> ``ein.incidents.critical``."""
-        return {
-            "alerts": self.alerts,
-            "triage.state": self.triage_state,
-            "incidents.critical": self.incidents_critical,
-            "incidents.normal": self.incidents_normal,
-            "investigation.events": self.events,
-            "investigation.state": self.investigation_state,
-        }
+        return {suffix: getattr(self, attr) for attr, suffix in self.SUFFIXES.items()}
 
     def resolve(self, name: str) -> str:
         """A short name from ``by_suffix`` or a full topic name, returned as the full name."""
@@ -88,15 +93,22 @@ class Topics:
         return {"critical": self.incidents_critical, "normal": self.incidents_normal}[priority]
 
     def all(self) -> dict[str, dict]:
-        """Topic name -> extra config, for the init step."""
+        """Topic name -> extra config, for the init step. State topics are compacted; flow topics keep
+        the broker's default retention."""
         return {
             self.alerts: {},
-            self.triage_state: {"cleanup.policy": "compact"},
+            self.alerts_state: {"cleanup.policy": "compact"},
             self.incidents_critical: {},
             self.incidents_normal: {},
-            self.events: {"retention.ms": str(30 * 24 * 3600 * 1000)},
-            self.investigation_state: {"cleanup.policy": "compact"},
+            self.incidents_state: {"cleanup.policy": "compact"},
+            self.tasks: {},
+            self.reports: {},
         }
+
+    def stale(self, existing: list[str]) -> list[str]:
+        """Topics on the broker that carry this prefix but are not part of the layout: left over from
+        an earlier topic model. ``ein-mesh reset --prune`` deletes them."""
+        return sorted(t for t in existing if t.startswith(self.prefix) and t not in self.all())
 
     def config_drift(self, name: str, current: dict[str, str]) -> dict[str, tuple[str | None, str | None]]:
         """How a topic's dynamic config on the broker differs from ``all()[name]``. ``current`` is the
@@ -139,3 +151,6 @@ class TriageSettings:
     batch_size: int = field(default_factory=lambda: int(_env("TRIAGE_BATCH_SIZE", "50")))
     batch_seconds: float = field(default_factory=lambda: float(_env("TRIAGE_BATCH_SECONDS", "30")))
     llm_timeout: float = field(default_factory=lambda: float(_env("TRIAGE_LLM_TIMEOUT", "120")))
+    # bounds on alerts.state: it is one record per cluster, rewritten whole on every change
+    max_attachments: int = field(default_factory=lambda: int(_env("ALERTS_STATE_MAX_ATTACHMENTS", "20")))
+    ignored_ttl_days: float = field(default_factory=lambda: float(_env("IGNORED_TTL_DAYS", "7")))

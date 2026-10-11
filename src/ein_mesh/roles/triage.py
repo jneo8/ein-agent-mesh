@@ -4,8 +4,9 @@ Design note: "Alert storm" section. An alert whose group key already has exactly
 attaches to it by rule, without the model. The rest is batched (``batch_size`` alerts or
 ``batch_seconds``) and classified with one LLM call per cluster per batch: open or ignore, with a
 priority and a title. The model may attach only when several open incidents share the alert's group
-and it has to pick one. Validation and a rule-based fallback guard the output. Offsets commit only
-after the incidents, events and state snapshot are produced.
+and it has to pick one. Validation and a rule-based fallback guard the output. Every decision and its
+reason is kept on ``alerts.state`` (the role's memory); offsets commit only after the incidents and
+the state snapshot are produced.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import UTC, datetime, timedelta
 from typing import ClassVar
 
 import litellm
@@ -23,14 +25,17 @@ from ein_mesh.bus import MessageBus, Record
 from ein_mesh.config import Topics, TriageSettings
 from ein_mesh.roles.base import Role
 from ein_mesh.schemas import (
+    Alert,
+    AlertsState,
     Attach,
+    Attachment,
+    How,
     Ignore,
+    Ignored,
     Incident,
     IncidentMessage,
     Open,
     TriageOutput,
-    TriageState,
-    Alert,
     new_root_id,
 )
 
@@ -81,7 +86,7 @@ class Triage(Role):
         super().__init__(bus, topics)
         self.ts = ts
         self.open: dict[str, dict[str, Incident]] = {}  # cluster -> incident id -> incident
-        self.ignored: dict[str, set[str]] = {}  # cluster -> fingerprints already judged noise
+        self.ignored: dict[str, dict[str, Ignored]] = {}  # cluster -> fingerprint -> why it is noise
         self.pending: dict[str, list[Alert]] = {}  # cluster -> alerts not yet classified
         self.opened_at = bus.now()
 
@@ -101,11 +106,11 @@ class Triage(Role):
         return not self.pending
 
     async def restore(self) -> None:
-        """Rebuild the open-incident summary from the compacted state topic."""
-        for r in await self.bus.read_to_end(self.topics.triage_state):
-            st = TriageState.model_validate(r.value)
+        """Rebuild the open-incident table and the noise set from the compacted state topic."""
+        for r in await self.bus.read_to_end(self.topics.alerts_state):
+            st = AlertsState.model_validate(r.value)
             self.open[st.cluster] = {i.id: i for i in st.incidents}
-            self.ignored[st.cluster] = set(st.ignored)
+            self.ignored[st.cluster] = dict(st.ignored)
         if self.open:
             for cluster, incs in self.open.items():
                 log.info("restored cluster %s: %d open incidents, %d fingerprints judged noise",
@@ -137,7 +142,7 @@ class Triage(Role):
             if t.status != "firing":
                 continue
             received.setdefault(t.cluster, []).append(t)
-            if t.fingerprint in self.ignored.get(t.cluster, set()):
+            if t.fingerprint in self.ignored.get(t.cluster, {}):
                 rule_ignored.setdefault(t.cluster, []).append(t)
                 continue
             cands = self.candidates(t.cluster, t.group_key)
@@ -149,11 +154,11 @@ class Triage(Role):
             log.info("received %d firing alerts from cluster %s: %s", len(alerts), cluster, names(alerts))
         for cluster, alerts in rule_ignored.items():
             log.info("ignored %d alerts by rule, re-sent and already judged noise: %s", len(alerts), names(alerts))
-            await self.event(f"triage-{cluster}", "alerts.ignored",
-                             {"how": "rule", "alerts": [a.id for a in alerts], "reason": "re-send of an alert already judged noise"})
+            self.ignore(cluster, alerts, how="rule", reason="re-send of an alert already judged noise")
         for cluster, by_inc in rule_attached.items():
             for inc_id, alerts in by_inc.items():
                 await self.attach(cluster, inc_id, alerts, how="rule", reason="same group as the open incident")
+        for cluster in sorted(set(rule_ignored) | set(rule_attached)):
             await self.snapshot(cluster)
         if not self.pending:
             self.opened_at = self.bus.now()
@@ -252,7 +257,7 @@ class Triage(Role):
 
     # ---------- apply ----------
 
-    async def apply(self, cluster: str, alerts: list[Alert], out: TriageOutput, how: str) -> None:
+    async def apply(self, cluster: str, alerts: list[Alert], out: TriageOutput, how: How) -> None:
         by_id = {a.id: a for a in alerts}
         open_ = self.open.setdefault(cluster, {})
         for d in out.decisions:
@@ -263,28 +268,37 @@ class Triage(Role):
                 inc = Incident(id=root_id, cluster=cluster, namespace=ns, title=d.title,
                                priority=d.priority, alert_ids=d.alerts,
                                alertnames=sorted({a.alertname for a in picked}),
-                               group_key=picked[0].group_key if picked else "")
+                               group_key=picked[0].group_key if picked else "",
+                               how=how, reason=d.reason)
                 open_[root_id] = inc
                 await self.bus.produce(
                     self.topics.incidents(d.priority), root_id,
                     IncidentMessage(root_id=root_id, cluster=cluster, priority=d.priority,
                                     title=d.title, reason=d.reason, alerts=picked))
-                await self.event(root_id, "incident.opened", {"how": how, "title": d.title,
-                                                               "priority": d.priority, "reason": d.reason,
-                                                               "alerts": d.alerts})
                 log.info("opened %s [%s] %r by %s: %d alerts (%s) -> %s. Reason: %s", root_id, d.priority,
                          d.title, how, len(picked), names(picked), self.topics.incidents(d.priority), d.reason)
             elif isinstance(d, Attach):
                 await self.attach(cluster, d.incident, [by_id[i] for i in d.alerts], how=how, reason=d.reason)
             elif isinstance(d, Ignore):
                 picked = [by_id[i] for i in d.alerts]
-                self.ignored.setdefault(cluster, set()).update(a.fingerprint for a in picked)
-                await self.event(f"triage-{cluster}", "alerts.ignored", {"how": how, "alerts": d.alerts,
-                                                                          "reason": d.reason})
+                self.ignore(cluster, picked, how=how, reason=d.reason)
                 log.info("ignored %d alerts by %s (%s). Reason: %s", len(picked), how, names(picked), d.reason)
         await self.snapshot(cluster)
 
-    async def attach(self, cluster: str, incident_id: str, alerts: list[Alert], how: str, reason: str) -> None:
+    def ignore(self, cluster: str, alerts: list[Alert], how: How, reason: str) -> None:
+        """Remember these alerts' fingerprints as noise, with the decision behind it. A re-send of a known
+        fingerprint joins its entry and refreshes ``at``, so noise that keeps firing keeps being ignored."""
+        table = self.ignored.setdefault(cluster, {})
+        for a in alerts:
+            entry = table.get(a.fingerprint)
+            if entry is None:
+                table[a.fingerprint] = Ignored(alerts=[a.id], how=how, reason=reason)
+            else:
+                if a.id not in entry.alerts:
+                    entry.alerts.append(a.id)
+                entry.at = datetime.now(UTC).isoformat()
+
+    async def attach(self, cluster: str, incident_id: str, alerts: list[Alert], how: How, reason: str) -> None:
         """Fold alerts into an open incident. Idempotent on alert id, so a replayed batch is harmless."""
         inc = self.open[cluster][incident_id]
         new = [a for a in alerts if a.id not in inc.alert_ids]
@@ -292,14 +306,21 @@ class Triage(Role):
             return
         inc.alert_ids.extend(a.id for a in new)
         inc.alertnames = sorted(set(inc.alertnames) | {a.alertname for a in new})
-        await self.event(incident_id, "alerts.attached", {"how": how, "alerts": [a.id for a in new], "reason": reason})
+        inc.attached.append(Attachment(alerts=[a.id for a in new], how=how, reason=reason))
+        del inc.attached[:-self.ts.max_attachments]
         log.info("attached %d alerts (%s) to %s %r by %s, now %d alerts. Reason: %s", len(new), names(new),
                  incident_id, inc.title, how, len(inc.alert_ids), reason)
 
     async def snapshot(self, cluster: str) -> None:
-        await self.bus.produce(self.topics.triage_state, cluster,
-                               TriageState(cluster=cluster, incidents=list(self.open.get(cluster, {}).values()),
-                                           ignored=sorted(self.ignored.get(cluster, set()))))
+        """Write this cluster's memory. Noise entries not refreshed within the TTL are dropped here, which
+        keeps the record bounded; a fingerprint that fires again after that is judged afresh."""
+        cutoff = (datetime.now(UTC) - timedelta(days=self.ts.ignored_ttl_days)).isoformat()
+        table = self.ignored.setdefault(cluster, {})
+        for fp in [fp for fp, e in table.items() if e.at < cutoff]:
+            del table[fp]
+        await self.bus.produce(self.topics.alerts_state, cluster,
+                               AlertsState(cluster=cluster, incidents=list(self.open.get(cluster, {}).values()),
+                                           ignored=dict(table)))
 
     async def handle_batch(self, cluster: str, alerts: list[Alert]) -> None:
         t0 = time.monotonic()

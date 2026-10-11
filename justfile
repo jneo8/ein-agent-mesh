@@ -73,7 +73,7 @@ kafka-init:
     uv run --directory {{ root }} ein-mesh init
 
 [group('kafka')]
-[doc('Development only: delete and recreate every mesh topic, empty. Stop the roles first. `just kafka-reset --yes` skips the prompt.')]
+[doc('Development only: delete and recreate every mesh topic, empty. Stop the roles first. `--yes` skips the prompt, `--prune` also drops topics the layout no longer names.')]
 kafka-reset *args:
     uv run --directory {{ root }} ein-mesh reset {{ args }}
 
@@ -103,7 +103,7 @@ gateway *args:
     uv run --directory {{ root }} ein-mesh gateway {{ args }}
 
 [group('integrators')]
-[doc('Tail: print records from the given topics (short or full names); none means every mesh topic. e.g. just tail incidents.critical investigation.events')]
+[doc('Tail: print records from the given topics (short or full names); none means every mesh topic. e.g. just tail incidents.critical incidents.state')]
 tail *topics:
     uv run --directory {{ root }} ein-mesh tail {{ topics }}
 
