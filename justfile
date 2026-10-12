@@ -113,9 +113,45 @@ tail *topics:
     uv run --directory {{ root }} ein-mesh tail {{ topics }}
 
 [group('integrators')]
-[doc('Replay the recorded storm at a running gateway: curl the ceph-osd-storm scenario with startsAt set to now.')]
+[doc('Replay the recorded storm at a running gateway: curl the ceph-osd-storm scenario with startsAt set to now. The cluster is positional: just gateway-fire staging')]
 gateway-fire cluster='dev':
     jq --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg c '{{ cluster }}' \
         '.alerts[] |= (.startsAt = $now | .labels.cluster = $c)' {{ storm }} \
         | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- {{ gateway_url }}/alertmanager
     @echo
+
+[group('integrators')]
+[doc("List alerts in Alertmanager (UTCP_ALERTMANAGER_URL), nothing sent. Positional: FILTER is an Alertmanager matcher ('' for none), STATE is firing (active, not silenced or inhibited; the default) or all. e.g. just gateway-alerts 'alertname=~\"Ceph.*\"' all")]
+gateway-alerts filter='' state='firing':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    am="${UTCP_ALERTMANAGER_URL:?set UTCP_ALERTMANAGER_URL in .env}"
+    case '{{ state }}' in
+        firing) args=(--data-urlencode 'active=true' --data-urlencode 'silenced=false' --data-urlencode 'inhibited=false') ;;
+        all)    args=(--data-urlencode 'active=true' --data-urlencode 'silenced=true' --data-urlencode 'inhibited=true') ;;
+        *)      echo "state must be firing or all, not '{{ state }}'" >&2; exit 2 ;;
+    esac
+    [ -n '{{ filter }}' ] && args+=(--data-urlencode 'filter={{ filter }}')
+    body=$(curl -sS --fail-with-body --get "$am/api/v2/alerts" "${args[@]}") || { echo "Alertmanager: $body" >&2; exit 1; }
+    jq -r '["ALERT", "SEVERITY", "STATE", "MODEL", "APPLICATION", "UNIT", "SINCE"],
+            (.[] | [.labels.alertname, (.labels.severity // "-"),
+                    (.status.state + (if (.status.silencedBy | length) > 0 then "/silenced" else "" end)
+                                   + (if (.status.inhibitedBy | length) > 0 then "/inhibited" else "" end)),
+                    (.labels.juju_model // .labels.namespace // "-"), (.labels.juju_application // "-"),
+                    (.labels.juju_unit // "-"), .startsAt]) | @tsv' <<< "$body" \
+        | column -t -s $'\t'
+
+[group('integrators')]
+[doc("Send what is firing right now in Alertmanager (UTCP_ALERTMANAGER_URL) to a running gateway, as the webhook would. Arguments are positional: just gateway-fire-live dev 'alertname=~\"Ceph.*\"'")]
+gateway-fire-live cluster='dev' filter='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    am="${UTCP_ALERTMANAGER_URL:?set UTCP_ALERTMANAGER_URL in .env}"
+    args=(--data-urlencode 'active=true' --data-urlencode 'silenced=false' --data-urlencode 'inhibited=false')
+    [ -n '{{ filter }}' ] && args+=(--data-urlencode 'filter={{ filter }}')
+    body=$(curl -sS --fail-with-body --get "$am/api/v2/alerts" "${args[@]}") || { echo "Alertmanager: $body" >&2; exit 1; }
+    jq --arg c '{{ cluster }}' '{receiver: "ein-mesh", status: "firing", version: "4", groupKey: "",
+            alerts: [.[] | {status: "firing", annotations, startsAt, endsAt, fingerprint, generatorURL,
+                            labels: (.labels + {cluster: $c, namespace: (.labels.namespace // .labels.juju_application // "")})}]}' <<< "$body" \
+        | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- {{ gateway_url }}/alertmanager
+    echo

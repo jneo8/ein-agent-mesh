@@ -68,9 +68,23 @@ Order does not matter; a role that starts late reads what it missed.
 ## 5. Replay a storm
 
 ```bash
-just gateway-fire                 # the recorded Ceph storm, cluster=dev
-just gateway-fire cluster=staging # another cluster: everything is new again
+just gateway-fire                 # the recorded Ceph storm, cluster dev
+just gateway-fire staging         # another cluster: everything is new again
 ```
+
+Or send a real fault instead of a recording: break something in the cluster the sources watch, wait for
+its alerts to fire, then let the recipe stand in for Alertmanager's webhook:
+
+```bash
+just gateway-alerts                                      # what is firing now; nothing sent
+just gateway-alerts 'alertname=~"Ceph.*"'                # narrowed by an Alertmanager matcher
+just gateway-alerts '' all                               # silenced and inhibited ones too
+just gateway-fire-live                                   # send everything firing now, cluster dev
+just gateway-fire-live dev 'alertname=~"Ceph.*"'         # only the alerts the fault raised
+```
+
+The quoted alerts then match what the investigator's tools find, so a report's evidence can be checked
+against the live systems. `Watchdog` always fires; triage ignores it.
 
 Expected, in about a minute: triage logs one model call and three new incidents; the orchestrator
 issues one task each; the investigator logs its sources at start (`tools: alertmanager 6 operations,

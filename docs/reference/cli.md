@@ -15,7 +15,9 @@ command has a `just` recipe that loads `.env` first. Settings: [settings](settin
 | `kafka-roles` | `ein-mesh roles` |
 | `triage`, `orchestrator`, `investigator` | the role |
 | `gateway *args`, `tail *topics` | the integrator |
-| `gateway-fire cluster='dev'` | `curl` the recorded storm at `http://127.0.0.1:8088/alertmanager` with `startsAt` set to now |
+| `gateway-fire [CLUSTER]` | `curl` the recorded storm at `http://127.0.0.1:8088/alertmanager` with `startsAt` set to now; `CLUSTER` defaults to `dev` |
+| `gateway-alerts [FILTER] [STATE]` | list alerts in `UTCP_ALERTMANAGER_URL`, one line per alert (name, severity, state, model, application, unit, since); `STATE` is `firing` (default: active, not silenced or inhibited) or `all`; nothing is sent |
+| `gateway-fire-live [CLUSTER] [FILTER]` | fetch the alerts firing now from `UTCP_ALERTMANAGER_URL` (active, not silenced or inhibited, optionally narrowed by an Alertmanager matcher such as `'alertname=~"Ceph.*"'`; recipe arguments are positional), wrap them as a webhook payload with the `cluster` label added and `namespace` defaulting to `juju_application` (so Juju alerts group per application), and `curl` them at the gateway |
 | `lint`, `fmt`, `test *args` | `ruff check`, `ruff format`, `pytest` over the unit tests, the harness self-tests and the tool package's tests (no broker, no model, no network) |
 | `specs-download *args` | refresh the shipped OpenAPI specs that have an upstream (`packages/ein-utcp/justfile`) |
 | `eval *args`, `eval-llm *args` | `python -m tests.eval` (scripted model, prints the score table), the same with `--llm --show` |
