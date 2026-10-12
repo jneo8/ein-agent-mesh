@@ -10,7 +10,7 @@ import pytest
 from ein_mesh.config import InvestigatorSettings, TriageSettings
 from ein_mesh.integrators import to_alert
 from ein_mesh.roles import Investigator, Orchestrator, Triage
-from ein_mesh.roles import investigator as investigator_mod
+from ein_mesh.roles import toolloop
 from ein_mesh.roles import triage as triage_mod
 
 from .conftest import storm_payload
@@ -94,8 +94,8 @@ async def test_storm_tasks_are_investigated_and_folded_into_context(bus, topics,
                 "identifiers": [a["id"] for a in quoted["alerts"]], "resources_checked": ["quoted alerts"]}
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(body)))])
 
-    monkeypatch.setattr(investigator_mod.litellm, "acompletion", acompletion)
-    await Investigator(bus, topics, InvestigatorSettings(model="fake", timeout=5)).run_until_idle()
+    monkeypatch.setattr(toolloop.litellm, "acompletion", acompletion)
+    await Investigator(bus, topics, InvestigatorSettings(model="fake", timeout=5, submit_reserve=1)).run_until_idle()
     reports = bus.values(topics.reports)
     assert len(reports) == 3 and all(r["status"] == "done" for r in reports)
 

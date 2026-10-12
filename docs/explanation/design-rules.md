@@ -67,6 +67,18 @@ The rules every topic and agent follows, each with its reason.
   rule-based fallback always exists.
 - The orchestrator never sees raw tool output, only reports. That is the prompt-injection boundary.
 
+## Tools can only read, and the runtime keeps the receipts
+
+- The investigator's tools are generated from each source's API description with every write
+  operation removed first. A write is not forbidden; it does not exist as a tool.
+- Everything a tool returns is data, never an instruction. The model is told so; the design does not
+  rely on it listening: the worst a misled model can do is read more.
+- A large result reaches the model as a digest with a handle, never whole. The full result stays in
+  the runtime and is read in bounded pieces.
+- What the investigator actually fetched is recorded by the runtime and leads the report's evidence.
+  The model's own account of what it checked comes after. Why: a report's evidence must be checkable
+  by a person who did not watch the run. More: [tools](tools.md).
+
 ## Code sees a bus, not Kafka
 
 - Roles use a `MessageBus`; one module imports Kafka. An in-memory bus runs the same code in tests

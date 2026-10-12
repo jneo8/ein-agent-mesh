@@ -4,16 +4,19 @@ model must show up as fallback; stage control (until / start-at from a dump) mus
 debugged alone."""
 
 import json
+import shutil
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from .harness import run_scenario, scenarios
+from .harness import Scenario, run_scenario, scenarios
 from .report import dump, load_dump
 from .score import score
 
 pytestmark = pytest.mark.asyncio
+
+CALLS_PER_TASK = 2  # the scripted investigation: one tool turn, one submit
 
 
 def _batch(messages):
@@ -31,8 +34,9 @@ async def test_scripted_model_is_clean_at_every_stage(scenario):
     assert s.gateway.ok() and s.triage.ok() and s.orchestrator.ok() and s.investigator.ok()
     assert s.perfect, s
     groups = s.triage.metrics["produced_groups"]
-    assert groups <= s.llm_calls <= len(scenario.waves) + groups, \
-        "triage: at most one call per wave (a wave of pure re-sends needs none); investigator: one call per incident"
+    assert groups <= s.llm_calls <= len(scenario.waves) + groups * CALLS_PER_TASK, \
+        "triage: at most one call per wave (a wave of pure re-sends needs none); investigator: one tool turn and one submit per task"
+    assert s.investigator.metrics["tool_calls"] == groups, "every task made its one scripted tool call"
     assert s.orchestrator.metrics["investigating"] == groups
     assert s.investigator.metrics["reports_done"] == s.orchestrator.metrics["tasks_done"] == groups
 
@@ -45,7 +49,7 @@ async def test_waves_attach_through_a_restarted_triage():
     run = await run_scenario(scenario)
     s = score(run)
     assert s.violations == [] and s.perfect, s
-    assert s.llm_calls == 2 + 2, "triage: wave 1 (ceph), wave 2 (new temporal group), wave 3 all rule attaches; investigator: one per incident"
+    assert s.llm_calls == 2 + 2 * CALLS_PER_TASK, "triage: wave 1 (ceph), wave 2 (new temporal group), wave 3 all rule attaches; investigator: a tool turn and a submit per incident"
     snapshots = run.bus.values(run.topics.alerts_state)
     assert len(snapshots) >= 3 and all(sn["cluster"] == "dev" for sn in snapshots), "at least one write per wave"
     final = snapshots[-1]["incidents"]
@@ -100,6 +104,29 @@ async def test_dead_model_shows_as_fallback():
     assert s.violations == []
     assert s.fallback_opens == s.triage.metrics["produced_groups"] >= 1, "every incident came from the fallback"
     assert s.investigator.ok(), "the investigator does not depend on triage's model"
+
+
+async def test_investigator_without_tools_still_reports(tmp_path):
+    """A scenario copy without tools.json: the toolbox is empty, the scripted model submits at once."""
+    [scenario] = scenarios(["ceph-osd-storm"])
+    copy = tmp_path / scenario.name
+    shutil.copytree(scenario.path, copy)
+    (copy / "tools.json").unlink()
+    s = score(await run_scenario(Scenario.load(copy)))
+    assert s.violations == [] and s.investigator.ok() and s.investigator.metrics["tool_calls"] == 0
+    assert s.llm_calls == 1 + s.triage.metrics["produced_groups"]
+
+
+async def test_a_spent_budget_salvages_a_report():
+    """A script longer than the budget allows: the loop forces a submit and every task still ends done."""
+    [scenario] = scenarios(["ceph-osd-storm"])
+    scenario.model["investigation"]["calls"] = [
+        {"source": "alertmanager", "operation": "getAlerts", "arguments": [{"name": "filter", "value": f"cluster=\"c{i}\""}]}
+        for i in range(5)]  # distinct calls, so none is refused as a repeat
+    s = score(await run_scenario(scenario, token_budget=4))  # the scripted model reports 2 tokens a turn
+    assert s.violations == [] and s.investigator.ok()
+    assert s.investigator.metrics["reports_done"] == s.triage.metrics["produced_groups"]
+    assert s.llm_calls == 1 + s.triage.metrics["produced_groups"] * 3, "two tool turns, then the forced submit"
 
 
 async def test_until_stops_after_a_stage():

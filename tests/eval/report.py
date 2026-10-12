@@ -80,6 +80,8 @@ def _investigator_section(run: Run) -> list[str]:
     lines = ["[investigator] incidents.reports:"]
     for r in run.bus.values(run.topics.reports):
         lines.append(f"  {r['root_id']}  {r['task_id']}  {r['status']:8} {(r['summary'] or r['error'])[:90]}")
+        for checked in r["resources_checked"]:
+            lines.append(f"      checked: {checked[:100]}")
     return lines
 
 

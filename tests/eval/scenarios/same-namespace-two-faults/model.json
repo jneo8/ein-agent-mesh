@@ -57,5 +57,19 @@
         }
       ]
     }
-  ]
+  ],
+  "investigation": {
+    "calls": [
+      {
+        "source": "alertmanager",
+        "operation": "getAlerts",
+        "arguments": [
+          {
+            "name": "filter",
+            "value": "cluster=\"dev\""
+          }
+        ]
+      }
+    ]
+  }
 }

@@ -180,3 +180,30 @@ def tool_specs(sources: list[str]) -> list[dict[str, Any]]:
            "handle. Use this instead of repeating the original call.", {"handle": handle}, ["handle"]),
         fn("list_results", "The handles registered so far, one line each.", {}, []),
     ]
+
+
+USAGE_GUIDE = """## Tools
+Operations of the sources below are called with call_operation(source, operation, arguments); arguments are
+one {name, value} pair per parameter, values as strings. A small result comes back whole; a large one as
+a digest: a header with the item count and a handle such as call-3, the distributions of its fields
+computed over every item, a few sample records, and a footer naming the tools that reach the rest. The
+full rows are not in the digest. To LIST records, read_result(handle, fields=["path.to.field", ...])
+returns one small line per record; grep_result(handle, pattern, fields=[...]) finds specific records;
+read_result(handle, offset, limit=1) shows one record whole; refresh_result(handle) re-runs the call when
+the digest may be stale. The digest already counts the whole set. grep_operations(source, pattern)
+searches the catalog when you need an operation not listed here. An {"error": ...} result tells you
+what to correct; a repeated identical call is refused in favour of its handle.
+
+Each catalog line is: <operation> | <path> | (<parameters>, * = required) | <description>
+"""
+
+NO_TOOLS = """## Tools
+None in this deployment. Reason over the quoted data alone and do not pretend to have run anything."""
+
+
+def usage_guide(catalogs: dict[str, list[str]]) -> str:
+    """What a model needs to know to use the tools over these sources, catalogs included; or the one line
+    that says there are none."""
+    if not catalogs:
+        return NO_TOOLS
+    return USAGE_GUIDE + "\n".join(f"### {source}\n" + "\n".join(lines) for source, lines in sorted(catalogs.items()))

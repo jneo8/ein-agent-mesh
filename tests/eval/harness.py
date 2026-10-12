@@ -2,7 +2,8 @@
 
 Stages, in order: ``gateway`` (payload -> alert records), ``triage`` (alerts -> incidents and
 ``alerts.state``), ``orchestrator`` (incidents -> ``incidents.state`` and one task each), ``investigator``
-(tasks -> reports, scripted from the quoted alerts, then the orchestrator again to fold them in). Each stage
+(tasks -> reports through the tool loop over the scenario's scripted sources, then the orchestrator again
+to fold them in). Each stage
 reads only what the previous one left on the bus, so a run can stop after any stage (``until``) or start at
 a later one from a saved dump (``start_at`` + a pre-loaded bus) to debug that stage alone.
 
@@ -20,11 +21,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ein_mesh.bus import InMemoryBus
+from litellm.types.utils import ChatCompletionMessageToolCall, Message
+
 from ein_mesh.config import InvestigatorSettings, Topics, TriageSettings
 from ein_mesh.integrators import to_alert
 from ein_mesh.roles import Investigator, Orchestrator, Triage
-from ein_mesh.roles import investigator as investigator_mod
+from ein_mesh.roles import toolloop
 from ein_mesh.roles import triage as triage_mod
+from ein_utcp import Toolbox
 
 SCENARIOS = Path(__file__).resolve().parent / "scenarios"
 STAGES = ("gateway", "triage", "orchestrator", "investigator")
@@ -127,22 +131,49 @@ def scripted_completion(run: Run):
     return acompletion
 
 
-async def scripted_investigation(model, messages, **kw):
-    """A litellm.acompletion stand-in for the investigator: findings built from the task's quoted alerts, so
-    the plumbing (task -> report -> context) is exercised without a model."""
-    quoted = json.loads(messages[1]["content"].split("## Quoted data\n", 1)[1])
-    alerts = quoted.get("alerts", [])
-    names = sorted({a["alertname"] for a in alerts})
-    body = {"summary": f"scripted: {len(alerts)} alerts ({', '.join(names)}); cause to be confirmed with tools",
-            "notes": [f"{n} firing - evidence: quoted alert" for n in names],
-            "identifiers": [f"{a['id']} - alert instance" for a in alerts], "resources_checked": ["quoted alerts"]}
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(body)))])
+def scripted_investigation(run: Run):
+    """A litellm.acompletion stand-in for the investigator's tool loop: it makes the tool calls listed under
+    ``investigation.calls`` in model.json, one per turn, then submits findings built from the task's quoted
+    alerts and one note per tool result it saw. The plumbing (task -> tools -> report -> context) is
+    exercised without a model. A forced submit (tool budget spent) is honoured at once."""
+    script = ((run.scenario.model or {}).get("investigation") or {}).get("calls") or []
+
+    async def acompletion(model, messages, **kw):
+        forced = isinstance(kw.get("tool_choice"), dict)
+        offered = {t["function"]["name"] for t in kw.get("tools") or []}
+        step = sum(1 for m in messages if m["role"] == "tool")
+        if step < len(script) and not forced and "call_operation" in offered:
+            call = script[step]
+            arguments = {k: v for k, v in call.items()}
+            return _turn(ChatCompletionMessageToolCall(id=f"call{step}", type="function",
+                                                       function={"name": "call_operation", "arguments": json.dumps(arguments)}))
+        quoted = json.loads(messages[1]["content"].split("## Quoted data\n", 1)[1])
+        alerts = quoted.get("alerts", [])
+        names = sorted({a["alertname"] for a in alerts})
+        notes = [f"{n} firing - evidence: quoted alert" for n in names]
+        for m in messages:
+            if m["role"] == "tool" and m["name"] == "call_operation" and not m["content"].startswith('{"error"'):
+                first = m["content"].splitlines()[0]
+                notes.append(f"tool result seen - evidence: {first[:80]}")
+        findings = {"summary": f"scripted: {len(alerts)} alerts ({', '.join(names)}); {len(notes) - len(names)} tool results",
+                    "notes": notes, "identifiers": [f"{a['id']} - alert instance" for a in alerts],
+                    "resources_checked": ["quoted alerts"]}
+        return _turn(ChatCompletionMessageToolCall(id="submit", type="function",
+                                                   function={"name": toolloop.SUBMIT, "arguments": json.dumps(findings)}))
+
+    return acompletion
+
+
+def _turn(call: ChatCompletionMessageToolCall):
+    """One scripted assistant turn. It reports a token each way so a token budget can be exercised."""
+    return SimpleNamespace(choices=[SimpleNamespace(message=Message(role="assistant", content=None, tool_calls=[call]))],
+                           usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1))
 
 
 @dataclass
 class Usage:
-    """Token usage summed over every LLM call of a run. Zero for the scripted model; ``cost_usd`` is
-    None when litellm cannot price the model."""
+    """Token usage summed over every LLM call of a run. The scripted triage reports none; a scripted
+    investigator turn reports one token each way. ``cost_usd`` is None when litellm cannot price the model."""
 
     calls: int = 0
     prompt_tokens: int = 0
@@ -217,22 +248,28 @@ async def stage_orchestrator(run: Run) -> None:
     await Orchestrator(run.bus, run.topics).run_until_idle()
 
 
-async def stage_investigator(run: Run, llm: bool) -> None:
-    """One Investigator over whatever tasks are unread, then the orchestrator once more to fold the reports in."""
-    inner = investigator_mod.litellm.acompletion if llm else scripted_investigation
+async def stage_investigator(run: Run, llm: bool, token_budget: int = 200_000) -> None:
+    """One Investigator over whatever tasks are unread, with the scenario's scripted sources (``tools.json``,
+    none when the file is absent) as its toolbox, then the orchestrator once more to fold the reports in.
+    ``llm`` swaps the scripted model for the real one; the sources stay scripted, so an eval never reaches
+    a network."""
+    inner = toolloop.litellm.acompletion if llm else scripted_investigation(run)
 
     async def counting(*a, **kw):
         response = await inner(*a, **kw)
         run.usage.add(response)
         return response
 
-    with patch.object(investigator_mod.litellm, "acompletion", counting):
-        await Investigator(run.bus, run.topics, InvestigatorSettings(timeout=120)).run_until_idle()
+    toolbox = Toolbox.scripted(run.scenario.path / "tools.json")
+    settings = InvestigatorSettings(timeout=120, submit_reserve=30, token_budget=token_budget)
+    with patch.object(toolloop.litellm, "acompletion", counting):
+        await Investigator(run.bus, run.topics, settings, toolbox=toolbox).run_until_idle()
     await stage_orchestrator(run)
 
 
 async def run_scenario(scenario: Scenario, llm: bool = False, ts: TriageSettings | None = None, *,
-                       until: str = STAGES[-1], start_at: str = "gateway", bus: InMemoryBus | None = None) -> Run:
+                       until: str = STAGES[-1], start_at: str = "gateway", bus: InMemoryBus | None = None,
+                       token_budget: int = 200_000) -> Run:
     """Run the stages from ``start_at`` to ``until`` inclusive. ``bus`` seeds the run (a loaded dump) when
     starting after the gateway; without it, a later ``start_at`` has nothing to read and is an error.
     When the run includes both gateway and triage, alerts keep arriving: each wave is ingested and
@@ -249,7 +286,7 @@ async def run_scenario(scenario: Scenario, llm: bool = False, ts: TriageSettings
             if "orchestrator" in span:
                 await stage_orchestrator(run)
             if "investigator" in span:
-                await stage_investigator(run, llm)
+                await stage_investigator(run, llm, token_budget)
         run.stages.extend(span)
         return run
     for stage in span:
@@ -260,7 +297,7 @@ async def run_scenario(scenario: Scenario, llm: bool = False, ts: TriageSettings
         elif stage == "orchestrator":
             await stage_orchestrator(run)
         elif stage == "investigator":
-            await stage_investigator(run, llm)
+            await stage_investigator(run, llm, token_budget)
         run.stages.append(stage)
     return run
 

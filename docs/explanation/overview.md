@@ -39,8 +39,9 @@ identity, so it always travels together.
   reports into a bounded summary of what is known, decides what to do next, and is the only agent
   that talks to people.
 - **Investigator** does one task at a time: look, do not touch, report what you found with the
-  evidence. It has no memory and makes no decisions about the incident. Today it reasons over the
-  quoted alerts; read-only tools come next.
+  evidence. It has no memory and makes no decisions about the incident. It looks through read-only
+  tools at the monitoring systems (what is firing now, what a metric did, what the logs say) and the
+  runtime, not the model, records what it looked at.
 - **Frontend** (later) relays questions to a chat thread and answers back. It translates; it never
   decides.
 
@@ -61,4 +62,4 @@ other.
 - People are asked, never bypassed: closing an incident is a person's call.
 
 Where the details are: [lifecycle](lifecycle.md), [design rules](design-rules.md),
-[triage](triage.md), [topics](../reference/topics.md), [commands](../reference/cli.md).
+[triage](triage.md), [tools](tools.md), [topics](../reference/topics.md), [commands](../reference/cli.md).

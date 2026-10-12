@@ -53,6 +53,6 @@ stateDiagram-v2
 
 - `detected → open`, `open → investigating`, and the loop inside `investigating`: one task per
   incident, a report back, retries with a pointer to the failed attempt, findings folded into the
-  incident's memory.
-- Not built: the investigator's tools, the orchestrator's own model turn, `waiting` and `closed`
-  with the frontend's questions and answers.
+  incident's memory. The investigator looks through read-only tools ([tools](tools.md)).
+- Not built: the orchestrator's own model turn, `waiting` and `closed` with the frontend's questions
+  and answers.

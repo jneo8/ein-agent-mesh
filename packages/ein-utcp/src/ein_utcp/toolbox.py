@@ -21,7 +21,7 @@ from ein_utcp.results import (
     call_fingerprint,
 )
 from ein_utcp.source import Source, SourceConfig
-from ein_utcp.tools import Operation, grep_catalog, tool_specs
+from ein_utcp.tools import Operation, grep_catalog, tool_specs, usage_guide
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +94,10 @@ class Toolbox:
     def tool_specs(self) -> list[dict[str, Any]]:
         """OpenAI-style function schemas for the tools; empty when no source is configured."""
         return tool_specs(self.sources)
+
+    def guide(self) -> str:
+        """The prompt section that teaches a model the tools and lists every source's catalog."""
+        return usage_guide({name: source.catalog() for name, source in self._sources.items()})
 
     async def call(self, name: str, arguments: dict[str, Any] | None) -> str:
         """Route one tool call by name. Never raises."""

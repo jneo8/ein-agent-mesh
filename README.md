@@ -21,6 +21,7 @@ flowchart LR
 - [Lifecycle](docs/explanation/lifecycle.md): the states an incident passes through and who moves it.
 - [Design rules](docs/explanation/design-rules.md): the rules every topic and role follows, and why.
 - [Triage](docs/explanation/triage.md): why rules go first and the model under-merges.
+- [Tools](docs/explanation/tools.md): how the investigator looks at the infrastructure without being able to touch it.
 
 ## Do
 
@@ -33,11 +34,12 @@ flowchart LR
 - [Commands](docs/reference/cli.md): every `ein-mesh` command and `just` recipe.
 - [Settings](docs/reference/settings.md): every environment variable and Terraform input.
 - [Evals](docs/reference/evals.md): scenario files, stages, scorer columns.
+- [Tools](docs/reference/tools.md): the sources, the tools the model calls, the sizes.
 - [Python API](docs/reference/python-api.md): `Role` and `MessageBus`.
 
 ## Status
 
 - Implemented: gateway, triage, orchestrator (owns the incident, issues tasks, folds reports into
-  its memory, retries), investigator (one model call per task, no tools), the topic model, evals.
-- Next: read-only tools for the investigator, then the orchestrator's own model turn, then `closed`
-  and the chat frontend.
+  its memory, retries), investigator with read-only tools over Prometheus, Loki and Alertmanager
+  (`packages/ein-utcp`), the topic model, evals.
+- Next: the orchestrator's own model turn, then `closed` and the chat frontend.

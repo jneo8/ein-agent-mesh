@@ -29,6 +29,8 @@ def _quiet_litellm() -> None:
     lg = logging.getLogger("LiteLLM")
     lg.handlers.clear()
     lg.setLevel(logging.ERROR)
+    for name in ("utcp", "utcp_http"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def _env() -> tuple[KafkaBus, Topics]:
@@ -126,13 +128,16 @@ def roles() -> None:
 
 
 @cli.command()
-def triage() -> None:
+@click.option("--prompt", type=click.Path(exists=True, dir_okay=False), metavar="FILE",
+              help="System prompt file; overrides TRIAGE_PROMPT and the shipped prompts/triage.md.")
+def triage(prompt: str | None) -> None:
     """Triage role: detected -> open."""
     from ein_mesh.roles import Triage
 
     _quiet_litellm()
     bus, topics = _env()
-    asyncio.run(Triage(bus, topics, TriageSettings()).run())
+    settings = TriageSettings(prompt=prompt) if prompt else TriageSettings()
+    asyncio.run(Triage(bus, topics, settings).run())
 
 
 @cli.command()
@@ -145,13 +150,21 @@ def orchestrator() -> None:
 
 
 @cli.command()
-def investigator() -> None:
+@click.option("--prompt", type=click.Path(exists=True, dir_okay=False), metavar="FILE",
+              help="System prompt file; overrides INVESTIGATOR_PROMPT and the shipped prompts/investigator.md.")
+@click.option("--timeout", type=float, metavar="SECONDS", help="Per-task limit; overrides INVESTIGATOR_TIMEOUT.")
+@click.option("--submit-reserve", type=float, metavar="SECONDS",
+              help="Part of the timeout kept for submitting the report; overrides INVESTIGATOR_SUBMIT_RESERVE.")
+@click.option("--token-budget", type=int, metavar="TOKENS", help="Tokens one task may spend; overrides INVESTIGATOR_TOKEN_BUDGET.")
+def investigator(prompt: str | None, timeout: float | None, submit_reserve: float | None, token_budget: int | None) -> None:
     """Investigator role: one task at a time, a report per task."""
     from ein_mesh.roles import Investigator
 
     _quiet_litellm()
     bus, topics = _env()
-    asyncio.run(Investigator(bus, topics, InvestigatorSettings()).run())
+    overrides = {k: v for k, v in dict(prompt=prompt, timeout=timeout, submit_reserve=submit_reserve,
+                                       token_budget=token_budget).items() if v is not None}
+    asyncio.run(Investigator(bus, topics, InvestigatorSettings(**overrides)).run())
 
 
 @cli.command()

@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass, field
 from itertools import combinations
 
@@ -208,6 +210,9 @@ def score_orchestrator(run: Run) -> StageScore:
                                        "tasks_done": tasks_done}, violations)
 
 
+TOOL_CALL = re.compile(r"^\w+\.\S+( |$)")  # a resources_checked entry the runtime wrote: source.operation key=value
+
+
 def score_investigator(run: Run) -> StageScore:
     if not run.ran("investigator"):
         return StageScore("investigator", skipped=True)
@@ -224,8 +229,14 @@ def score_investigator(run: Run) -> StageScore:
     missing = issued - set(done)
     if missing:
         violations.append(f"{len(missing)} issued task(s) without a done report")
+    tool_calls = [c for r in reports if r["status"] == "done" for c in r["resources_checked"] if TOOL_CALL.match(c)]
+    if (run.scenario.path / "tools.json").exists():
+        for r in reports:
+            if r["status"] == "done" and not any(TOOL_CALL.match(c) for c in r["resources_checked"]):
+                violations.append(f"{r['task_id']} reported done without a single tool call on record")
     return StageScore("investigator", {"tasks": len(issued), "reports_done": len(done),
-                                       "reports_failed": sum(1 for r in reports if r["status"] != "done")}, violations)
+                                       "reports_failed": sum(1 for r in reports if r["status"] != "done"),
+                                       "tool_calls": len(tool_calls)}, violations)
 
 
 def score(run: Run) -> Score:

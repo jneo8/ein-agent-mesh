@@ -16,12 +16,13 @@ command has a `just` recipe that loads `.env` first. Settings: [settings](settin
 | `triage`, `orchestrator`, `investigator` | the role |
 | `gateway *args`, `tail *topics` | the integrator |
 | `gateway-fire cluster='dev'` | `curl` the recorded storm at `http://127.0.0.1:8088/alertmanager` with `startsAt` set to now |
-| `lint`, `fmt`, `test *args` | `ruff check`, `ruff format`, `pytest tests/unit tests/eval` (unit tests and harness self-tests; no broker, no model) |
+| `lint`, `fmt`, `test *args` | `ruff check`, `ruff format`, `pytest` over the unit tests, the harness self-tests and the tool package's tests (no broker, no model, no network) |
+| `specs-download *args` | refresh the shipped OpenAPI specs that have an upstream (`packages/ein-utcp/justfile`) |
 | `eval *args`, `eval-llm *args` | `python -m tests.eval` (scripted model, prints the score table), the same with `--llm --show` |
 | `gates` | `lint`, `test`, `eval` |
 
-Recipe names carry their group as prefix (`deploy-`, `kafka-`, `gateway-`); roles and integrators
-keep their process name.
+Recipe names carry their group as prefix (`deploy-`, `kafka-`, `gateway-`, `specs-`); roles and
+integrators keep their process name.
 
 ## `init`
 
@@ -73,9 +74,10 @@ Integrator. No LLM, no auth, no TLS.
 - Dedup set (`fingerprint:startsAt`) is in memory; lost on restart.
 - Field mapping: [topics › alerts](topics.md#alerts).
 
-## `triage`
+## `triage [--prompt FILE]`
 
-Role, group `ein-triage`.
+Role, group `ein-triage`. `--prompt` replaces the system prompt (over `TRIAGE_PROMPT` and the shipped
+file).
 
 | | |
 | --- | --- |
@@ -106,9 +108,10 @@ the task (`done` is final; a late report overrides `expired` / `failed`) → rew
 poll, including empty ones: expire tasks past their deadline and decide on retries → commit.
 Settings: [orchestrator](settings.md#orchestrator). No model turn yet.
 
-## `investigator`
+## `investigator [--prompt FILE] [--timeout S] [--submit-reserve S] [--token-budget N]`
 
-Role, group `ein-investigator`.
+Role, group `ein-investigator`. Each option overrides the matching environment variable
+([settings](settings.md#investigator)); the prompt file may use `$tools` and `$submit`.
 
 | | |
 | --- | --- |
@@ -116,11 +119,15 @@ Role, group `ein-investigator`.
 | Writes | `incidents.reports` |
 | Memory | none |
 | Done when | one report per task, produced before the offset commits |
-| On failure | depth over the limit → `failed`; deadline passed → `expired`, no model call; model timeout / error / bad JSON → `failed` with the error |
+| On failure | depth over the limit → `failed`; deadline passed → `expired`, no model call; tool budget spent or the model stops calling tools → one forced `submit_report`, then a plain JSON answer; model timeout / error / no usable answer → `failed` with the error |
 
 One task at a time; `max_poll_interval_ms` is the task timeout plus 60 s. A task for another `role`
-is skipped. No tools yet: one model call over the task body. Settings:
-[investigator](settings.md#investigator).
+is skipped. The model investigates with read-only tools over the sources whose `UTCP_*_URL` is set
+(none set: it reasons over the quoted data alone), within `INVESTIGATOR_TOKEN_BUDGET` tokens and
+`INVESTIGATOR_TIMEOUT` less `INVESTIGATOR_SUBMIT_RESERVE` seconds; each tool call has
+`TOOL_CALL_TIMEOUT` seconds. What it
+actually fetched leads the report's `resources_checked`. Settings: [investigator](settings.md#investigator),
+[tools](settings.md#tools); the tools: [tools reference](tools.md).
 
 ## `tail [TOPIC...] [--from-start]`
 

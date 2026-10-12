@@ -154,6 +154,7 @@ class TriageSettings:
     fingerprints are capped (``max_attachments``, ``ignored_ttl_days``)."""
 
     model: str = field(default_factory=lambda: _env("EIN_AGENT_MODEL", "gemini/gemini-3.7-flash"))
+    prompt: str = field(default_factory=lambda: _env("TRIAGE_PROMPT"))  # a file; empty means the shipped one
     batch_size: int = field(default_factory=lambda: int(_env("TRIAGE_BATCH_SIZE", "50")))
     batch_seconds: float = field(default_factory=lambda: float(_env("TRIAGE_BATCH_SECONDS", "30")))
     llm_timeout: float = field(default_factory=lambda: float(_env("TRIAGE_LLM_TIMEOUT", "120")))
@@ -171,12 +172,25 @@ class OrchestratorSettings:
 
 @dataclass(frozen=True)
 class InvestigatorSettings:
-    """The investigator's model, per-task timeout (also sizes the consumer's poll interval) and the
-    delegation depth beyond which a task is refused."""
+    """The investigator's model and prompt, its per-task gates (timeout, with a reserve for submitting;
+    tokens) and the delegation depth beyond which a task is refused. The timeout also sizes the consumer's
+    poll interval."""
 
     model: str = field(default_factory=lambda: _env("EIN_AGENT_MODEL", "gemini/gemini-3.7-flash"))
+    prompt: str = field(default_factory=lambda: _env("INVESTIGATOR_PROMPT"))  # a file; empty means the shipped one
     timeout: float = field(default_factory=lambda: float(_env("INVESTIGATOR_TIMEOUT", "600")))
+    submit_reserve: float = field(default_factory=lambda: float(_env("INVESTIGATOR_SUBMIT_RESERVE", "120")))
     max_depth: int = field(default_factory=lambda: int(_env("INVESTIGATOR_MAX_DEPTH", "3")))
+    token_budget: int = field(default_factory=lambda: int(_env("INVESTIGATOR_TOKEN_BUDGET", "200000")))
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.submit_reserve < self.timeout:
+            raise ValueError(f"INVESTIGATOR_SUBMIT_RESERVE ({self.submit_reserve}) must be shorter than the timeout ({self.timeout})")
+
+    @property
+    def investigating_time(self) -> float:
+        """How long the model may keep looking: the timeout minus what is kept for submitting the report."""
+        return self.timeout - self.submit_reserve
 
 
 @dataclass(frozen=True)

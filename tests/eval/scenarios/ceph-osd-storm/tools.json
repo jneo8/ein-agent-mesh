@@ -1,0 +1,215 @@
+{
+  "alertmanager": {
+    "catalog": [
+      "alertmanager.getAlerts | /api/v2/alerts | (active, silenced, inhibited, unprocessed, filter, receiver) | Get a list of alerts",
+      "alertmanager.getStatus | /api/v2/status | () | Get current status of an Alertmanager instance"
+    ],
+    "responses": [
+      {
+        "operation": "getAlerts",
+        "result": [
+          {
+            "labels": {
+              "alertname": "CephOSDDown",
+              "severity": "critical",
+              "namespace": "ceph",
+              "cluster": "dev",
+              "osd": "osd.3",
+              "host": "ceph-2"
+            },
+            "annotations": {
+              "summary": "OSD osd.3 on ceph-2 is down"
+            },
+            "startsAt": "2026-10-10T00:00:00+00:00",
+            "endsAt": "0001-01-01T00:00:00.000Z",
+            "fingerprint": "99b8de25e237b143",
+            "status": {
+              "state": "active",
+              "silencedBy": [],
+              "inhibitedBy": []
+            }
+          },
+          {
+            "labels": {
+              "alertname": "CephPGDegraded",
+              "severity": "warning",
+              "namespace": "ceph",
+              "cluster": "dev",
+              "pool": "k8s-rbd"
+            },
+            "annotations": {
+              "summary": "PGs degraded in pool k8s-rbd"
+            },
+            "startsAt": "2026-10-10T00:00:00+00:00",
+            "endsAt": "0001-01-01T00:00:00.000Z",
+            "fingerprint": "9d7f545e7f79daea",
+            "status": {
+              "state": "active",
+              "silencedBy": [],
+              "inhibitedBy": []
+            }
+          },
+          {
+            "labels": {
+              "alertname": "CephClusterWarningState",
+              "severity": "warning",
+              "namespace": "ceph",
+              "cluster": "dev"
+            },
+            "annotations": {
+              "summary": "Ceph health is HEALTH_WARN"
+            },
+            "startsAt": "2026-10-10T00:00:00+00:00",
+            "endsAt": "0001-01-01T00:00:00.000Z",
+            "fingerprint": "b80b8378957f35ae",
+            "status": {
+              "state": "active",
+              "silencedBy": [],
+              "inhibitedBy": []
+            }
+          },
+          {
+            "labels": {
+              "alertname": "KubePersistentVolumeFillingUp",
+              "severity": "warning",
+              "namespace": "temporal",
+              "cluster": "dev",
+              "persistentvolumeclaim": "pgdata-postgresql-k8s-0"
+            },
+            "annotations": {
+              "summary": "PVC pgdata-postgresql-k8s-0 at 91%"
+            },
+            "startsAt": "2026-10-10T00:00:00+00:00",
+            "endsAt": "0001-01-01T00:00:00.000Z",
+            "fingerprint": "ed9974c8a1bf8513",
+            "status": {
+              "state": "active",
+              "silencedBy": [],
+              "inhibitedBy": []
+            }
+          },
+          {
+            "labels": {
+              "alertname": "KubePodCrashLooping",
+              "severity": "critical",
+              "namespace": "temporal",
+              "cluster": "dev",
+              "pod": "temporal-k8s-0"
+            },
+            "annotations": {
+              "summary": "temporal-k8s-0 restarting"
+            },
+            "startsAt": "2026-10-10T00:00:00+00:00",
+            "endsAt": "0001-01-01T00:00:00.000Z",
+            "fingerprint": "8599b4f48a07ed0b",
+            "status": {
+              "state": "active",
+              "silencedBy": [],
+              "inhibitedBy": []
+            }
+          },
+          {
+            "labels": {
+              "alertname": "KubePodCrashLooping",
+              "severity": "critical",
+              "namespace": "temporal",
+              "cluster": "dev",
+              "pod": "postgresql-k8s-0"
+            },
+            "annotations": {
+              "summary": "postgresql-k8s-0 restarting"
+            },
+            "startsAt": "2026-10-10T00:00:00+00:00",
+            "endsAt": "0001-01-01T00:00:00.000Z",
+            "fingerprint": "9ac29c1a926b0f35",
+            "status": {
+              "state": "active",
+              "silencedBy": [],
+              "inhibitedBy": []
+            }
+          },
+          {
+            "labels": {
+              "alertname": "TargetDown",
+              "severity": "warning",
+              "namespace": "cos",
+              "cluster": "dev",
+              "job": "node-exporter"
+            },
+            "annotations": {
+              "summary": "25% of node-exporter targets down"
+            },
+            "startsAt": "2026-10-10T00:00:00+00:00",
+            "endsAt": "0001-01-01T00:00:00.000Z",
+            "fingerprint": "9b9ae2a8d2dc2ea7",
+            "status": {
+              "state": "active",
+              "silencedBy": [],
+              "inhibitedBy": []
+            }
+          },
+          {
+            "labels": {
+              "alertname": "Watchdog",
+              "severity": "none",
+              "namespace": "cos",
+              "cluster": "dev"
+            },
+            "annotations": {
+              "summary": "Always firing: alerting pipeline is working"
+            },
+            "startsAt": "2026-10-10T00:00:00+00:00",
+            "endsAt": "0001-01-01T00:00:00.000Z",
+            "fingerprint": "cf9f8e8e201f337a",
+            "status": {
+              "state": "active",
+              "silencedBy": [],
+              "inhibitedBy": []
+            }
+          },
+          {
+            "labels": {
+              "alertname": "KubeHpaMaxedOut",
+              "severity": "info",
+              "namespace": "iam",
+              "cluster": "dev",
+              "hpa": "login-ui"
+            },
+            "annotations": {
+              "summary": "HPA at max replicas"
+            },
+            "startsAt": "2026-10-10T00:00:00+00:00",
+            "endsAt": "0001-01-01T00:00:00.000Z",
+            "fingerprint": "d2d12e243987706c",
+            "status": {
+              "state": "active",
+              "silencedBy": [],
+              "inhibitedBy": []
+            }
+          },
+          {
+            "labels": {
+              "alertname": "CephOSDDown",
+              "severity": "critical",
+              "namespace": "ceph",
+              "cluster": "dev",
+              "osd": "osd.7",
+              "host": "ceph-2"
+            },
+            "annotations": {
+              "summary": "OSD osd.7 on ceph-2 is down"
+            },
+            "startsAt": "2026-10-10T00:00:00+00:00",
+            "endsAt": "0001-01-01T00:00:00.000Z",
+            "fingerprint": "ac1f352e717c596d",
+            "status": {
+              "state": "active",
+              "silencedBy": [],
+              "inhibitedBy": []
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -29,9 +29,18 @@ KAFKA_BOOTSTRAP=<node ip>:<nodeport>
 KAFKA_USERNAME=relation-N
 KAFKA_PASSWORD=...
 GEMINI_API_KEY=...
+UTCP_PROMETHEUS_URL=http://<cos proxy>/cos-prometheus-0     # the investigator's sources; any may be left out
+UTCP_LOKI_URL=http://<cos proxy>/cos-loki-0
+UTCP_ALERTMANAGER_URL=http://<cos proxy>/cos-alertmanager
+UTCP_ALLOW_HTTP=true                                       # only for plain http:// to a non-loopback host
 ```
 
-Defaults cover everything else; see [settings](../reference/settings.md).
+Defaults cover everything else; see [settings](../reference/settings.md). Leave every `UTCP_*_URL`
+out to run the investigator without tools: it then reasons over the quoted alerts alone.
+
+To change what a role is told, copy its prompt out of `src/ein_mesh/prompts/`, edit the copy and point
+`TRIAGE_PROMPT` or `INVESTIGATOR_PROMPT` at it (or pass `--prompt FILE` to the recipe's command). The
+investigator's gates (`--timeout`, `--submit-reserve`, `--token-budget`) take the same route.
 
 ## 3. Create the topics
 
@@ -64,9 +73,12 @@ just gateway-fire cluster=staging # another cluster: everything is new again
 ```
 
 Expected, in about a minute: triage logs one model call and three new incidents; the orchestrator
-issues one task each; the investigator reports three times; the orchestrator logs `report received`
-and `incidents.state` shows each task `done` with a filled `context`. A second replay of the same
-storm attaches by rule and makes no triage call.
+issues one task each; the investigator logs its sources at start (`tools: alertmanager 6 operations,
+...`), then per task `tool call 1 call_operation {"source": "alertmanager", ...}` lines, a token count per turn, and
+`report for inc-...: ... | n tool calls (alertmanager.getAlerts, prometheus.query x2) in 42.1s`; the
+orchestrator logs `report received` and `incidents.state` shows each task `done` with a filled
+`context`. `just tail incidents.reports` shows `resources_checked` starting with the calls that were
+made. A second replay of the same storm attaches by rule and makes no triage call.
 
 ## 6. Watch
 
