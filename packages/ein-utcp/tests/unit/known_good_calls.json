@@ -1,0 +1,298 @@
+[
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "limit": 5,
+      "query": "probe_success"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "ALERTS{alertstate=\"firing\"}"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{probe=\"icmp\"}"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{probe=\"icmp\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{probe=\"icmp\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{destination_hostname=\"host-c\", probe=\"icmp\"}"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "count by (probe) (probe_success == 0)"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{destination_hostname=\"host-c\", probe=\"icmp\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{probe=\"icmp\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "count by (source_hostname, destination_hostname) (probe_success{probe=\"icmp\"} == 0)"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{destination_hostname=\"host-b\", probe=\"icmp\"}"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{probe=\"icmp\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "sum_over_time(probe_success{probe=\"icmp\"}[1h]) < count_over_time(probe_success{probe=\"icmp\"}[1h])"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "sum_over_time((probe_success{probe=\"icmp\"} == 0)[1h])"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "sum_over_time(probe_success{probe=\"icmp\"}[1h])"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{probe=\"icmp\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{destination_hostname=~\"host-a|host-d\"}"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "{__name__=~\".*(icmp|ping|loss|packet).*\"}"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "{__name__=~\"probe_.*\"}"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "group by (job) (probe_success)"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "{job=~\"host-a-icmp\"}"
+    }
+  },
+  {
+    "tool_name": "loki.instant-query",
+    "arguments": {
+      "limit": 50,
+      "query": "{job=~\".*\"} |= \"ovs-vswitchd\""
+    }
+  },
+  {
+    "tool_name": "loki.instant-query",
+    "arguments": {
+      "limit": 10,
+      "query": "{filename=~\"/var/log/.*\"}"
+    }
+  },
+  {
+    "tool_name": "loki.instant-query",
+    "arguments": {
+      "limit": 50,
+      "query": "{filename=~\"/var/log/openvswitch/.*\"}"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{job=~\"*blackbox*\"}"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success"
+    }
+  },
+  {
+    "tool_name": "loki.instant-query",
+    "arguments": {
+      "query": "{filename=~\"/var/log/openvswitch/.*\"} |= \"host-e\" or \"host-f\""
+    }
+  },
+  {
+    "tool_name": "loki.instant-query",
+    "arguments": {
+      "query": "{filename=~\"/var/log/openvswitch/.*\"} |~ \"host-e|host-f\""
+    }
+  },
+  {
+    "tool_name": "loki.instant-query",
+    "arguments": {
+      "query": "{filename=~\"/var/log/openvswitch/.*\"} |~ \"err|ERR|warn|WARN|fail|FAIL\""
+    }
+  },
+  {
+    "tool_name": "loki.instant-query",
+    "arguments": {
+      "query": "{filename=~\"/var/log/openvswitch/.*\", instance=~\"host-e.*|host-f.*\"}"
+    }
+  },
+  {
+    "tool_name": "loki.list-labels",
+    "arguments": {}
+  },
+  {
+    "tool_name": "loki.label-values",
+    "arguments": {
+      "name": "filename"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{job=~\"_icmp-\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{job=~\".*icmp.*\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{job=~\".*icmp.*\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "{__name__=~\"probe_.*\"}"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{job=~\"*icmp*\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{job=~\".*icmp.*\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{probe=\"icmp\"} == 0"
+    }
+  },
+  {
+    "tool_name": "prometheus.query",
+    "arguments": {
+      "query": "probe_success{probe=\"icmp\"} < 1"
+    }
+  }
+]

@@ -17,17 +17,17 @@ gates: lint test eval
 [group('gates')]
 [doc('ruff check on src and tests.')]
 lint:
-    uv run --directory {{ root }} ruff check src tests
+    uv run --directory {{ root }} ruff check src tests packages
 
 [group('gates')]
 [doc('ruff format on src and tests.')]
 fmt:
-    uv run --directory {{ root }} ruff format src tests
+    uv run --directory {{ root }} ruff format src tests packages
 
 [group('gates')]
 [doc('Every test that costs nothing: unit tests on the InMemoryBus and the eval harness self-tests. No broker, no LLM.')]
 test *args:
-    uv run --directory {{ root }} --group test pytest tests/unit tests/eval {{ args }}
+    uv run --directory {{ root }} --group test pytest tests/unit tests/eval packages/ein-utcp/tests/unit {{ args }}
 
 [group('gates')]
 [doc('Scenario evals, staged gateway → triage → orchestrator, scripted model; must be clean. Args: scenario names, --show, --until STAGE, --start-at STAGE --from-dump DIR, --dump DIR, --threshold.')]
@@ -81,6 +81,11 @@ kafka-topics *args:
 [doc('Who is consuming: every ${KAFKA_GROUP_PREFIX}* consumer group with members, assignments and lag.')]
 kafka-roles:
     uv run --directory {{ root }} ein-mesh roles
+
+[group('specs')]
+[doc('Download the OpenAPI specs the tool plane ships (those with an upstream; see packages/ein-utcp/justfile for versions).')]
+specs-download *args:
+    just --justfile {{ root }}/packages/ein-utcp/justfile download {{ args }}
 
 [group('roles')]
 [doc('Triage role: detected → open.')]

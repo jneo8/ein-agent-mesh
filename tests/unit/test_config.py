@@ -2,7 +2,7 @@
 
 import pytest
 
-from ein_mesh.config import Topics
+from ein_mesh.config import ToolSettings, Topics
 
 
 def test_defaults():
@@ -59,3 +59,19 @@ def test_config_drift_compares_against_the_layout():
         "segment.bytes": ("5", None),
     }
 
+
+
+def test_tool_settings_offer_only_the_sources_with_a_url(monkeypatch):
+    assert ToolSettings().sources() == [] and ToolSettings().limits().call_timeout == 60
+    monkeypatch.setenv("UTCP_ALERTMANAGER_URL", "http://127.0.0.1:9093")
+    monkeypatch.setenv("UTCP_PROMETHEUS_URL", "https://cos.example/cos-prometheus-0")
+    monkeypatch.setenv("UTCP_PROMETHEUS_TOKEN", "t0k")
+    monkeypatch.setenv("TOOL_CALL_TIMEOUT", "5")
+    monkeypatch.setenv("UTCP_ALLOW_HTTP", "true")
+    settings = ToolSettings()
+    assert [(s.name, s.url, s.token) for s in settings.sources()] == [
+        ("prometheus", "https://cos.example/cos-prometheus-0", "t0k"), ("alertmanager", "http://127.0.0.1:9093", "")]
+    assert settings.allow_http and settings.limits().call_timeout == 5
+    monkeypatch.setenv("UTCP_LOKI_URL", "loki:3100")
+    with pytest.raises(ValueError):
+        ToolSettings().sources()

@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from ein_utcp import Limits, SourceConfig
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
@@ -175,3 +177,32 @@ class InvestigatorSettings:
     model: str = field(default_factory=lambda: _env("EIN_AGENT_MODEL", "gemini/gemini-3.7-flash"))
     timeout: float = field(default_factory=lambda: float(_env("INVESTIGATOR_TIMEOUT", "600")))
     max_depth: int = field(default_factory=lambda: int(_env("INVESTIGATOR_MAX_DEPTH", "3")))
+
+
+@dataclass(frozen=True)
+class ToolSettings:
+    """The investigator's tool plane: which read-only sources it may reach and the sizes it works within.
+    A source whose URL is unset is not offered. Plain HTTP to a non-loopback host needs ``UTCP_ALLOW_HTTP``."""
+
+    prometheus_url: str = field(default_factory=lambda: _env("UTCP_PROMETHEUS_URL"))
+    loki_url: str = field(default_factory=lambda: _env("UTCP_LOKI_URL"))
+    alertmanager_url: str = field(default_factory=lambda: _env("UTCP_ALERTMANAGER_URL"))
+    prometheus_token: str = field(default_factory=lambda: _env("UTCP_PROMETHEUS_TOKEN"))
+    loki_token: str = field(default_factory=lambda: _env("UTCP_LOKI_TOKEN"))
+    alertmanager_token: str = field(default_factory=lambda: _env("UTCP_ALERTMANAGER_TOKEN"))
+    allow_http: bool = field(default_factory=lambda: _env("UTCP_ALLOW_HTTP", "false").lower() in ("1", "true", "yes"))
+    call_timeout: float = field(default_factory=lambda: float(_env("TOOL_CALL_TIMEOUT", "60")))
+    digest_max_bytes: int = field(default_factory=lambda: int(_env("DIGEST_MAX_BYTES", "8192")))
+    result_max_bytes: int = field(default_factory=lambda: int(_env("TOOL_RESULT_MAX_BYTES", "16384")))
+    cache_max_bytes: int = field(default_factory=lambda: int(_env("RESULT_CACHE_MAX_BYTES", str(64 * 1024 * 1024))))
+
+    def sources(self) -> list[SourceConfig]:
+        """One config per source with a URL, in the shipped-spec order."""
+        configured = [("prometheus", self.prometheus_url, self.prometheus_token),
+                      ("loki", self.loki_url, self.loki_token),
+                      ("alertmanager", self.alertmanager_url, self.alertmanager_token)]
+        return [SourceConfig(name, url, token) for name, url, token in configured if url]
+
+    def limits(self) -> Limits:
+        return Limits(call_timeout=self.call_timeout, digest_max_bytes=self.digest_max_bytes,
+                      result_max_bytes=self.result_max_bytes, cache_max_bytes=self.cache_max_bytes)
